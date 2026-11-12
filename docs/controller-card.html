@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ROV Controller Card</title>
+<style>
+  @page { size: A4 landscape; margin: 0; }
+  :root { --ink:#111; --muted:#555; --line:#222; --arm:#0a7a2f; --stop:#c8102e; --accent:#1f5fbf; --soft:#f1f3f6; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; background:#fff; color:var(--ink);
+    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+    -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .page { width:297mm; height:210mm; padding:9mm 11mm 8mm; display:flex; flex-direction:column; gap:4mm;
+    border: 0.6mm dashed #bbb; margin:0 auto; }
+  header { display:flex; align-items:baseline; justify-content:space-between; border-bottom:0.8mm solid var(--ink); padding-bottom:2mm; }
+  h1 { margin:0; font-size:26pt; letter-spacing:0.5pt; }
+  header p { margin:0; font-size:11pt; color:var(--muted); }
+  .diagram { flex:1; min-height:0; }
+  svg { width:100%; height:100%; display:block; }
+  .lbl { font-size:17px; fill:var(--ink); }
+  .lbl b, .key { font-weight:700; }
+  .key { font-size:17px; }
+  .arm { fill:var(--arm); } .stop { fill:var(--stop); } .acc { fill:var(--accent); }
+  .sub { font-size:13px; fill:var(--muted); }
+  .bottom { display:grid; grid-template-columns: 1fr 1fr 1.15fr; gap:4mm; flex:none; }
+  .card { border:0.5mm solid var(--line); border-radius:3mm; padding:3mm 4mm; }
+  .card h2 { margin:0 0 2mm; font-size:13pt; text-transform:uppercase; letter-spacing:0.5pt; }
+  .card h2 small { font-weight:400; text-transform:none; color:var(--muted); letter-spacing:0; font-size:10pt; }
+  table { width:100%; border-collapse:collapse; font-size:10.5pt; }
+  td { padding:1.1mm 0; border-bottom:0.25mm solid #ccc; vertical-align:top; }
+  td:first-child { font-weight:700; width:38%; }
+  tr:last-child td { border-bottom:0; }
+  ol { margin:0; padding-left:5mm; font-size:10.5pt; line-height:1.45; }
+  .pill { display:inline-block; padding:0 2mm; border-radius:1.5mm; color:#fff; font-weight:700; }
+  .pill.g { background:var(--arm); } .pill.r { background:var(--stop); }
+  .note { margin-top:1.5mm; font-size:9.5pt; color:var(--muted); line-height:1.35; }
+  @media screen { body { background:#e9ebef; padding:10px 0; } .page { background:#fff; box-shadow:0 2px 12px rgba(0,0,0,.15); } }
+  @media screen and (max-width: 1150px) { .page { width:100%; height:auto; } .bottom { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+<div class="page">
+  <header>
+    <h1>ROV CONTROLS</h1>
+    <p>PS5 DualSense / PS4 controller &nbsp;·&nbsp; press <b>OPTIONS</b> to arm, <b style="color:var(--stop)">CIRCLE</b> to stop</p>
+  </header>
+
+  <div class="diagram"><svg viewBox="0 0 1000 455" role="img" aria-label="Controller button map">
+    <defs>
+      <marker id="dot" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="5" markerHeight="5"><circle cx="5" cy="5" r="4" fill="#222"/></marker>
+    </defs>
+    <!-- controller body -->
+    <g stroke="#222" stroke-width="3" fill="#f4f5f7">
+      <rect x="300" y="78" width="80" height="20" rx="8"/>
+      <rect x="620" y="78" width="80" height="20" rx="8"/>
+      <rect x="296" y="103" width="88" height="14" rx="6" fill="#e3e6eb"/>
+      <rect x="616" y="103" width="88" height="14" rx="6" fill="#e3e6eb"/>
+      <path d="M360 118 L640 118 Q700 118 716 170 L762 352 Q772 408 726 414 Q690 418 668 378 L628 312 L372 312 L332 378 Q310 418 274 414 Q228 408 238 352 L284 170 Q300 118 360 118 Z"/>
+      <rect x="428" y="128" width="144" height="88" rx="10" fill="#fff"/>
+    </g>
+    <!-- D-pad -->
+    <g fill="#fff" stroke="#222" stroke-width="2.5">
+      <path d="M340 178 h20 v16 h16 v20 h-16 v16 h-20 v-16 h-16 v-20 h16 z"/>
+    </g>
+    <g fill="#222"><path d="M350 182 l6 8 h-12 z"/><path d="M350 226 l6 -8 h-12 z"/></g>
+    <!-- face buttons -->
+    <g stroke="#222" stroke-width="2.5" fill="#fff">
+      <circle cx="650" cy="174" r="15"/><circle cx="680" cy="203" r="15"/>
+      <circle cx="620" cy="203" r="15"/><circle cx="650" cy="232" r="15"/>
+    </g>
+    <g fill="none" stroke-width="2.4">
+      <path d="M650 165 l8 14 h-16 z" stroke="#1a9e7a"/>
+      <circle cx="680" cy="203" r="7" stroke="#c8102e"/>
+      <rect x="613" y="196" width="14" height="14" stroke="#b0398f"/>
+      <path d="M644 226 l12 12 M656 226 l-12 12" stroke="#3a6fd0"/>
+    </g>
+    <!-- create / options / PS -->
+    <g fill="#fff" stroke="#222" stroke-width="2.2">
+      <rect x="380" y="143" width="14" height="22" rx="5"/><rect x="606" y="143" width="14" height="22" rx="5"/>
+      <circle cx="500" cy="300" r="13"/>
+    </g>
+    <!-- sticks -->
+    <g stroke="#222" stroke-width="2.5">
+      <circle cx="420" cy="268" r="30" fill="#d9dde3"/><circle cx="420" cy="268" r="18" fill="#fff"/>
+      <circle cx="580" cy="268" r="30" fill="#d9dde3"/><circle cx="580" cy="268" r="18" fill="#fff"/>
+    </g>
+    <text x="500" y="178" text-anchor="middle" class="sub">touchpad (not used)</text>
+    <g fill="none" stroke="#222" stroke-width="1.6" marker-end="url(#dot)">
+      <!-- left callouts -->
+      <polyline points="230,40 300,40 330,88"/>
+      <polyline points="230,92 300,92 325,112"/>
+      <polyline points="230,144 340,144 386,150"/>
+      <polyline points="230,200 332,200"/>
+      <polyline points="230,300 330,300 400,272"/>
+      <!-- right callouts -->
+      <polyline points="770,40 700,40 670,88"/>
+      <polyline points="770,92 700,92 675,112"/>
+      <polyline points="770,144 660,144 614,150"/>
+      <polyline points="770,182 700,182 660,174"/>
+      <polyline points="770,218 705,218 690,203"/>
+      <polyline points="770,254 700,254 633,206"/>
+      <polyline points="770,290 700,290 660,232"/>
+      <polyline points="770,326 670,326 600,276"/>
+      <!-- PS -->
+      <polyline points="500,420 500,322"/>
+    </g>
+
+    <!-- left labels -->
+    <g text-anchor="end">
+      <text x="225" y="46" class="lbl"><tspan class="key">L2</tspan> · go DOWN</text>
+      <text x="225" y="98" class="lbl"><tspan class="key">L1</tspan> · speed down</text>
+      <text x="225" y="150" class="lbl stop"><tspan class="key">CREATE</tspan> · STOP</text>
+      <text x="225" y="198" class="lbl"><tspan class="key">D-pad ↑ ↓</tspan> · tilt nose</text>
+      <text x="225" y="218" class="sub">up / down  (← → not used)</text>
+      <text x="225" y="298" class="lbl"><tspan class="key">Left stick</tspan> · drive</text>
+      <text x="225" y="318" class="sub">see profile below</text>
+    </g>
+    <!-- right labels -->
+    <g text-anchor="start">
+      <text x="775" y="46" class="lbl"><tspan class="key">R2</tspan> · go UP</text>
+      <text x="775" y="98" class="lbl"><tspan class="key">R1</tspan> · speed up</text>
+      <text x="775" y="150" class="lbl arm"><tspan class="key">OPTIONS</tspan> · ARM</text>
+      <text x="775" y="188" class="lbl"><tspan class="key">△ TRIANGLE</tspan> · next profile</text>
+      <text x="775" y="224" class="lbl stop"><tspan class="key">○ CIRCLE</tspan> · STOP</text>
+      <text x="775" y="260" class="lbl"><tspan class="key">□ SQUARE</tspan> · camera on/off</text>
+      <text x="775" y="296" class="sub"><tspan font-weight="700">✕ CROSS</tspan> · not used</text>
+      <text x="775" y="332" class="lbl"><tspan class="key">Right stick</tspan> · up/down</text>
+      <text x="775" y="352" class="sub">(Tank: right motor)</text>
+    </g>
+    <text x="500" y="442" text-anchor="middle" class="lbl stop"><tspan class="key">PS button</tspan> · STOP</text>
+  </svg></div>
+
+  <div class="bottom">
+    <div class="card">
+      <h2>Standard <small>profile 2 · default</small></h2>
+      <table>
+        <tr><td>Left stick ↕</td><td>forward / back</td></tr>
+        <tr><td>Left stick ↔</td><td>turn left / right</td></tr>
+        <tr><td>Right stick ↕</td><td>up / down</td></tr>
+        <tr><td>R2 / L2</td><td>up / down</td></tr>
+        <tr><td>D-pad ↑ ↓</td><td>tilt nose up / down</td></tr>
+      </table>
+    </div>
+    <div class="card">
+      <h2>Tank <small>profile 1</small></h2>
+      <table>
+        <tr><td>Left stick ↕</td><td>left motor fwd / back</td></tr>
+        <tr><td>Right stick ↕</td><td>right motor fwd / back</td></tr>
+        <tr><td>R2 / L2</td><td>up / down</td></tr>
+        <tr><td>D-pad ↑ ↓</td><td>tilt nose up / down</td></tr>
+      </table>
+      <p class="note">TRIANGLE switches profile (only while SAFE). Edit or add profiles on the screen with the mouse: SETUP › PROFILES.</p>
+    </div>
+    <div class="card">
+      <h2>Driving</h2>
+      <ol>
+        <li>Turn the controller on (PS button). Screen shows it connected.</li>
+        <li>Let go of the sticks, triggers and D-pad.</li>
+        <li>Press <span class="pill g">OPTIONS</span> to ARM.</li>
+        <li>Press <span class="pill r">CIRCLE</span> to STOP at any time.</li>
+      </ol>
+      <p class="note">Motors stop by themselves if the controller disconnects or goes quiet for 0.5 s. You then have to press OPTIONS again.
+        Speed starts at 50 % (25 / 50 / 75 / 100 % with R1 / L1).</p>
+    </div>
+  </div>
+</div>
+</body>
+</html>

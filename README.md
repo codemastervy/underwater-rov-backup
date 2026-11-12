@@ -47,6 +47,8 @@ The Mega's built-in **"L" LED is on whenever the motors are enabled**.
 4. Pair the controller in the laptop's Bluetooth settings (PS5: hold **CREATE + PS**), or plug it in with a USB cable.
 
 ## Driving
+
+**Printable controller card:** [docs/controller-card.pdf](docs/controller-card.pdf) (A4 landscape, one page) to stick on the case.
 Open **ROV Backup** from the app menu (or `bash run.sh`). The controls are the same as on the Pi:
 
 | Button | Action |
