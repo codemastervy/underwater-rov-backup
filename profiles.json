@@ -1,0 +1,51 @@
+{
+  "profiles": [
+    {
+      "name": "Tank",
+      "map": {
+        "ly": {
+          "action": "left_side"
+        },
+        "ry": {
+          "action": "right_side"
+        },
+        "r2": {
+          "action": "updown"
+        },
+        "l2": {
+          "action": "updown",
+          "invert": true
+        },
+        "dy": {
+          "action": "tilt",
+          "power": 0.6
+        }
+      }
+    },
+    {
+      "name": "Standard",
+      "map": {
+        "ly": {
+          "action": "forward"
+        },
+        "lx": {
+          "action": "turn"
+        },
+        "ry": {
+          "action": "updown"
+        },
+        "r2": {
+          "action": "updown"
+        },
+        "l2": {
+          "action": "updown",
+          "invert": true
+        },
+        "dy": {
+          "action": "tilt",
+          "power": 0.6
+        }
+      }
+    }
+  ]
+}

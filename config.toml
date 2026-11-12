@@ -1,0 +1,86 @@
+# Underwater ROV - LAPTOP BACKUP config (Arduino Mega 2560 drives the BTS7960 boards)
+# Pin numbers are Arduino Mega pin numbers (as printed on the board). See README.md for wiring.
+
+[output]
+type = "mega"            # motors go through the Arduino Mega on USB
+port = "auto"            # or e.g. "/dev/ttyACM0"
+baud = 115200
+
+[gpio]
+enable_pin = 22          # Mega pin 22 -> R_EN + L_EN of ALL four BTS7960 boards
+status_led_pin = -1      # not used on the Mega (its built-in LED shows "motors enabled")
+arm_switch_pin = -1      # not used on the Mega
+
+[camera]
+device = "auto"          # "auto" picks the USB capture card, not the laptop webcam. Or "/dev/video2" etc.
+
+[control]
+drive_profile = "Standard"   # active drive profile. Edit profiles in the app: SETUP > PROFILES.
+                             # Stored in profiles.json. TRIANGLE = next profile.
+deadzone = 0.08
+expo = 0.35
+ramp_per_second = 3.0
+speed_levels = [0.25, 0.5, 0.75, 1.0]
+start_speed_level = 1
+min_duty = 0
+heartbeat_timeout = 0.5
+invert_surge = false
+invert_yaw = false
+invert_heave = false
+invert_sway = false
+invert_pitch = false
+
+[controllers]
+preferred = ["DualSense", "Wireless Controller", "Xbox", "8BitDo", "Pro Controller"]
+
+# ---- Thrusters (same jobs and flips as the Pi) ----
+# Each motor's power = surge*s + yaw*y + heave*h + sway*w + pitch*p
+# Mega PWM pins used: 2,3 / 5,6 / 7,8 / 11,12 (all ~3.9 kHz). Don't use pins 4 or 13.
+
+[[motor]]
+# Motor 1 board: rear vertical thruster
+name = "rear_up"
+rpwm = 2
+lpwm = 3
+surge = 0.0
+yaw = 0.0
+heave = 1.0
+sway = 0.0
+pitch = -1.0
+invert = false
+
+[[motor]]
+# Motor 2 board: front vertical thruster
+name = "front_up"
+rpwm = 5
+lpwm = 6
+surge = 0.0
+yaw = 0.0
+heave = 1.0
+sway = 0.0
+pitch = 1.0
+invert = false
+
+[[motor]]
+# Motor 3 board: right horizontal thruster
+name = "right"
+rpwm = 7
+lpwm = 8
+surge = 1.0
+yaw = -1.0
+heave = 0.0
+sway = 0.0
+pitch = 0.0
+invert = true
+
+[[motor]]
+# Motor 4 board: left horizontal thruster
+name = "left"
+rpwm = 11
+lpwm = 12
+surge = 1.0
+yaw = 1.0
+heave = 0.0
+sway = 0.0
+pitch = 0.0
+invert = false
