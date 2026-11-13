@@ -3,3 +3,5 @@ __pycache__/
 .DS_Store
 rov_mega/build/
 .mega-firmware
+autopilot.json
+mission.json

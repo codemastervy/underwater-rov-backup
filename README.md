@@ -74,6 +74,10 @@ motors disarm).
 **Arm sound:** when armed, the motors play a short 3-note tune (no speaker: a tiny audio-frequency PWM makes the motors
 whistle). On/off, volume and TEST are in SETUP › EXTRAS. **This needs the updated firmware: run the setup command again with the Mega plugged in.**
 
+**Autopilot** (SETUP › AUTOPILOT, mouse only, OFF at every start-up): trim, CRUISE, LINE following, colour TARGET
+following, camera HEADING hold and timed MISSIONs. If it gets unsure it hovers and flashes **TAKE CONTROL NOW**,
+then switches off after 3 s. STOP always ends it. Same as the Pi version: see the Pi repo's README for details.
+
 **Camera picture:** CAMERA › PICTURE adjusts gain (ISO), brightness, contrast, colour and warmth (saved).
 
 `bash run.sh --fullscreen` for full screen, `--size 1600x960` for a bigger window.

@@ -22,6 +22,9 @@ Keyboard drive (switch it on on the case screen: SETUP > EXTRAS):
   The dashboard sends the keys; if it stops sending for 0.5 s the keys count as released
   (and with no controller connected the motors disarm).
 
+Autopilot (SETUP > AUTOPILOT, mouse only, off at every start-up): trim, cruise control, line following,
+colour-target following, camera heading hold, and pre-programmed missions. See class Autopilot.
+
 Arm sound: when armed, the motors play a short tune (quiet audio-frequency PWM, like a
 3D printer's stepper "music"). On/off, volume and TEST are on SETUP > EXTRAS.
 
@@ -55,6 +58,8 @@ KEYS_PATH = "/dev/shm/rov-keys.json"       # keyboard drive: keys held down, wri
 # Keyboard drive: key -> (motion axis, amount)
 KEY_AXES = {"w": ("surge", 1.0), "s": ("surge", -1.0), "d": ("yaw", 1.0), "a": ("yaw", -1.0),
             "space": ("heave", 1.0), "shift": ("heave", -1.0), "r": ("pitch", 0.6), "f": ("pitch", -0.6)}
+
+VISION_PATH = "/dev/shm/rov-vision.json"  # camera autopilot results, written by rov_gui.py
 
 # Motor "music": (frequency Hz, seconds); 0 Hz = silence.
 TUNES = {"arm": [(1047, 0.10), (0, 0.03), (1319, 0.10), (0, 0.03), (1568, 0.20)]}
@@ -500,6 +505,275 @@ def find_gamepad(preferred):
     return Gamepad(chosen, motion) if chosen else None
 
 
+# --------------------------------------------------------------------------- autopilot
+
+AP_MODES = ["cruise", "line", "target", "heading", "mission"]
+VISION_MODES = ("line", "target", "heading")
+# settings: key -> (default, min, max, step)
+AP_SETTINGS = {
+    "heave_trim": (0.0, -0.5, 0.5, 0.02),    # constant up(+)/down(-) thrust so it hovers
+    "pitch_trim": (0.0, -0.5, 0.5, 0.02),    # constant nose up(+)/down(-)
+    "power": (0.5, 0.1, 1.0, 0.05),          # most the autopilot may use on any axis
+    "speed": (0.3, 0.05, 0.8, 0.05),         # forward speed for line / target following
+    "steer": (1.0, 0.2, 3.0, 0.1),           # how hard it steers (gain)
+    "target_size": (0.08, 0.02, 0.4, 0.01),  # target follow: stop approaching at this share of the picture
+}
+AP_COLOURS = ["dark", "red", "orange", "yellow", "green", "blue", "pink", "white"]
+AP_CHOICES = {"line_colour": "dark", "target_colour": "orange"}
+MISSION_ACTIONS = {"forward": {"surge": 1.0}, "back": {"surge": -1.0}, "up": {"heave": 1.0},
+                   "down": {"heave": -1.0}, "turn_left": {"yaw": -1.0}, "turn_right": {"yaw": 1.0},
+                   "tilt_up": {"pitch": 1.0}, "tilt_down": {"pitch": -1.0}, "hover": {}}
+MISSION_ORDER = list(MISSION_ACTIONS)
+DEFAULT_MISSION = [{"do": "down", "power": 0.4, "secs": 2.0}, {"do": "forward", "power": 0.4, "secs": 4.0},
+                   {"do": "turn_right", "power": 0.4, "secs": 1.5}, {"do": "forward", "power": 0.4, "secs": 3.0},
+                   {"do": "hover", "power": 0.0, "secs": 2.0}]
+LOST_TIMEOUT = 3.0        # camera modes: switch off after this long without seeing the line/target
+PILOT_ACTIVE = 0.15       # pilot input above this = the pilot wants control
+
+
+def clean_mission(data):
+    steps = []
+    for st in (data or {}).get("steps", [])[:12]:
+        try:
+            if st["do"] in MISSION_ACTIONS:
+                steps.append({"do": st["do"], "power": max(0.0, min(1.0, float(st.get("power", 0.4)))),
+                              "secs": max(0.5, min(60.0, float(st.get("secs", 1.0))))})
+        except (KeyError, TypeError, ValueError):
+            pass
+    return steps
+
+
+class Autopilot:
+    """Adds automatic thrust on top of the pilot's command. Only ever active while ARMED, only switched on
+    from the screen (never the controller), and the master switch is OFF at every start-up.
+
+    Modes (one at a time):
+      cruise   holds the thrust you had when you clicked it; moving a stick overrides that axis
+      line     follows a line seen by the camera (the pilot can still go up/down)
+      target   steers towards a coloured object and stops at a set distance
+      heading  holds the direction using camera motion; the pilot drives, turning sets a new heading
+      mission  runs timed steps (mission.json, edited on the screen)
+    Trim (hover / nose) is added whenever the master switch is ON and the ROV is armed.
+    """
+
+    def __init__(self, rov, settings_path):
+        self.rov = rov
+        self.path = settings_path
+        self.s = {k: v[0] for k, v in AP_SETTINGS.items()}
+        self.s.update(AP_CHOICES)
+        try:
+            with open(settings_path) as f:
+                saved = json.load(f)
+            for k, v in saved.items():
+                if k in AP_SETTINGS:
+                    _, lo, hi, _ = AP_SETTINGS[k]
+                    self.s[k] = max(lo, min(hi, float(v)))
+                elif k in AP_CHOICES and v in AP_COLOURS:
+                    self.s[k] = v
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
+        self.enabled = False
+        self.mode = None
+        self.info = ""
+        self.locked = {}
+        self.lost_since = None
+        self.epoch = 0           # bumped to reset the camera heading reference
+        self.steps, self.step_i, self.step_t0 = [], 0, 0.0
+        self.alert = ""          # shown big on the screen: autopilot is unsure, pilot must take over
+        self.alert_until = 0.0
+
+    def save(self):
+        try:
+            with open(self.path + ".tmp", "w") as f:
+                json.dump(self.s, f, indent=1)
+            os.replace(self.path + ".tmp", self.path)
+        except OSError as ex:
+            log.error(f"saving autopilot settings failed: {ex}")
+
+    def set(self, key, value):
+        if key in AP_SETTINGS:
+            _, lo, hi, _ = AP_SETTINGS[key]
+            self.s[key] = round(max(lo, min(hi, float(value))), 3)
+        elif key in AP_CHOICES and value in AP_COLOURS:
+            self.s[key] = value
+        else:
+            return
+        self.save()
+
+    def set_enabled(self, on):
+        self.enabled = on
+        if not on:
+            self.off(None)
+        self.rov.say("Autopilot switched " + ("ON (trim active, pick a mode)" if on else "OFF"))
+
+    def off(self, why, warn=False):
+        was = self.mode
+        self.mode = None
+        self.locked = {}
+        self.lost_since = None
+        self.info = ""
+        self.alert = ""
+        if was and why:
+            self.rov.say(f"Autopilot {was.upper()} off ({why})")
+        if was and warn:
+            # it gave up by itself while the ROV is still armed: tell the pilot loudly
+            self.alert = f"AUTOPILOT OFF ({why}) - YOU HAVE CONTROL"
+            self.alert_until = time.monotonic() + 6.0
+
+    def engage(self, mode, pilot):
+        """Screen button. pilot = the pilot's current command."""
+        if mode not in AP_MODES:
+            return
+        if not self.enabled:
+            self.rov.say("Switch the autopilot ON first (SETUP > AUTOPILOT)")
+        elif not self.rov.armed:
+            self.rov.say("Arm first, then pick an autopilot mode")
+        elif mode == "cruise" and not any(abs(v) > PILOT_ACTIVE for v in pilot.values()):
+            self.rov.say("Drive at the speed you want, then click CRUISE")
+        elif mode != "cruise" and any(abs(v) > PILOT_ACTIVE for v in pilot.values()):
+            self.rov.say(f"Let go of the sticks, then click {mode.upper()}")
+        else:
+            if mode == "mission":
+                self.steps = self.load_mission()
+                if not self.steps:
+                    self.rov.say("The mission has no steps (SETUP > AUTOPILOT > EDIT MISSION)")
+                    return
+                self.step_i, self.step_t0 = 0, time.monotonic()
+            self.mode = mode
+            self.locked = {a: v for a, v in pilot.items() if abs(v) > PILOT_ACTIVE} if mode == "cruise" else {}
+            self.lost_since = None
+            self.epoch += 1
+            self.rov.say(f"Autopilot {mode.upper()} engaged - STOP or move the sticks to take over"
+                         if mode in ("line", "target", "mission") else f"Autopilot {mode.upper()} engaged")
+
+    def mission_path(self):
+        return os.path.join(os.path.dirname(self.path), "mission.json")
+
+    def load_mission(self):
+        try:
+            with open(self.mission_path()) as f:
+                return clean_mission(json.load(f))
+        except FileNotFoundError:
+            return [dict(st) for st in DEFAULT_MISSION]
+        except (OSError, ValueError):
+            return []
+
+    def read_vision(self):
+        try:
+            with open(VISION_PATH) as f:
+                v = json.load(f)
+        except (OSError, ValueError):
+            return None
+        if v.get("mode") != self.mode or abs(time.time() - float(v.get("ts", 0))) > 0.5:
+            return None
+        if v.get("epoch", self.epoch) != self.epoch and self.mode == "heading":
+            return None
+        return v
+
+    def lost(self, what):
+        now = time.monotonic()
+        if self.lost_since is None:
+            self.lost_since = now
+        left = LOST_TIMEOUT - (now - self.lost_since)
+        self.info = f"lost the {what} - hovering, switching off in {max(0.0, left):.0f} s"
+        self.alert = f"AUTOPILOT UNSURE: lost the {what} - TAKE CONTROL NOW"
+        if left <= 0:
+            self.off(f"lost the {what}", warn=self.rov.armed)
+
+    def unsure(self, why):
+        self.alert = f"AUTOPILOT UNSURE: {why} - TAKE CONTROL NOW"
+
+    def apply(self, pilot):
+        """pilot: the pilot's command (surge/yaw/heave/sway/pitch). Returns the command to drive."""
+        out = dict(pilot)
+        if not self.enabled or not self.rov.armed:
+            if self.mode:
+                self.off("disarmed")
+            return out
+        out["heave"] += self.s["heave_trim"]
+        out["pitch"] += self.s["pitch_trim"]
+        mode = self.mode
+        if not mode:
+            return out
+        P, steer, speed = self.s["power"], self.s["steer"], self.s["speed"]
+        active = {a for a, v in pilot.items() if abs(v) > PILOT_ACTIVE}
+        auto = {}
+        if mode == "cruise":
+            # the pilot overrides any axis they're using; the rest stay at the locked thrust
+            auto = {a: v for a, v in self.locked.items() if a not in active}
+            for a in auto:
+                out[a] -= pilot[a]
+            self.alert = ""
+            self.info = "holding " + ", ".join(f"{a} {v * 100:+.0f}%" for a, v in self.locked.items())
+        elif mode == "mission":
+            if active:
+                self.off("pilot took over")
+                return out
+            now = time.monotonic()
+            while self.step_i < len(self.steps) and now - self.step_t0 >= self.steps[self.step_i]["secs"]:
+                self.step_t0 += self.steps[self.step_i]["secs"]
+                self.step_i += 1
+            if self.step_i >= len(self.steps):
+                self.off("mission complete")
+                return out
+            self.alert = ""
+            st = self.steps[self.step_i]
+            auto = {a: w * st["power"] for a, w in MISSION_ACTIONS[st["do"]].items()}
+            self.info = (f"step {self.step_i + 1}/{len(self.steps)}: {st['do'].replace('_', ' ')} "
+                         f"{st['power'] * 100:.0f}% ({st['secs'] - (now - self.step_t0):.1f} s left)")
+        elif mode == "line":
+            if active & {"surge", "yaw", "sway"}:
+                self.off("pilot took over")
+                return out
+            v = self.read_vision()
+            if not v or not v.get("found"):
+                self.lost("line")
+            else:
+                self.lost_since = None
+                self.alert = ""
+                off, ang = float(v["offset"]), float(v["angle"])
+                auto = {"yaw": steer * (0.8 * off + 0.6 * ang), "surge": speed * (1 - min(0.7, abs(ang)))}
+                self.info = f"following the line (offset {off:+.2f}, angle {ang:+.2f})"
+        elif mode == "target":
+            if active:
+                self.off("pilot took over")
+                return out
+            v = self.read_vision()
+            if not v or not v.get("found"):
+                self.lost("target")
+            else:
+                self.lost_since = None
+                self.alert = ""
+                x, y, area = float(v["x"]), float(v["y"]), float(v["area"])
+                size = self.s["target_size"]
+                approach = max(-0.5, min(1.0, (size - area) / size * 1.5))
+                centred = max(0.0, 1 - abs(x) * 1.5)          # only drive forward when it's roughly ahead
+                auto = {"yaw": steer * 0.9 * x, "heave": -steer * 0.7 * y, "surge": speed * approach * centred}
+                self.info = f"target at x {x:+.2f}, y {y:+.2f}, size {area * 100:.1f}%"
+        elif mode == "heading":
+            if "yaw" in active:
+                self.epoch += 1                                # pilot turned: new heading when they let go
+                self.info = "pilot turning - new heading when you let go"
+            else:
+                v = self.read_vision()
+                if not v or not v.get("found"):
+                    self.info = "can't see enough detail to hold heading (not correcting)"
+                    self.unsure("can't see enough to hold heading" if v else "no camera picture")
+                else:
+                    self.alert = ""
+                    err = float(v["heading"])
+                    auto = {"yaw": max(-1.0, min(1.0, -steer * 2.5 * err))}
+                    self.info = f"holding heading (drift {err * 100:+.1f}%)"
+        for a, val in auto.items():
+            out[a] += max(-P, min(P, val))
+        return out
+
+    def status(self):
+        alert = self.alert if (self.mode or time.monotonic() < self.alert_until) else ""
+        return {"enabled": self.enabled, "mode": self.mode, "info": self.info, "epoch": self.epoch,
+                "settings": self.s, "alert": alert}
+
+
 # --------------------------------------------------------------------------- main app
 
 class ROV:
@@ -534,6 +808,10 @@ class ROV:
         self.sound_on = bool(c.get("arm_sound", True))
         self.sound_volume = max(1, min(15, int(c.get("sound_volume", 5))))
         self.tune = None
+        self.ap = Autopilot(self, os.path.join(os.path.dirname(os.path.abspath(config_path or
+                                                                               os.path.join(HERE, "config.toml"))),
+                                               "autopilot.json"))
+        self.last_pilot = dict.fromkeys(AXES, 0.0)
         try:
             os.remove(CMD_PATH)  # ignore any stale screen command from before startup
         except OSError:
@@ -603,6 +881,7 @@ class ROV:
             self.say(f"DISARMED ({why})")
         self.armed = False
         self.tune = None
+        self.ap.off(None)        # autopilot mode ends with every disarm (the DISARMED message says why)
 
     def say(self, msg):
         self.status_msg = msg
@@ -892,7 +1171,9 @@ class ROV:
             return
         if not self.armed:
             return
-        targets = mix(self.thrusters, self.command(), self.levels[self.level])
+        self.last_pilot = self.command()
+        cmd = self.ap.apply(self.last_pilot)
+        targets = mix(self.thrusters, {a: max(-1.0, min(1.0, v)) for a, v in cmd.items()}, self.levels[self.level])
         step = self.ramp_rate * TICK
         for t, target in zip(self.thrusters, targets):
             t.apply(self.gpio, ramp(t.value, target, step), self.min_duty)
@@ -922,6 +1203,7 @@ class ROV:
             "arm_sound": self.sound_on,
             "sound_volume": self.sound_volume,
             "playing": bool(self.tune),
+            "autopilot": self.ap.status(),
             "msg": self.status_msg,
         }
         try:
@@ -963,6 +1245,15 @@ class ROV:
             self.set_sound(volume=int(cmd.split(":")[1]))
         elif cmd == "sound_test":
             self.test_sound()
+        elif cmd.startswith("ap_enable:"):
+            self.ap.set_enabled(cmd.endswith(":1"))
+        elif cmd == "ap_off":
+            self.ap.off("switched off on screen")
+        elif cmd.startswith("ap:"):
+            self.ap.engage(cmd[3:], self.last_pilot if self.armed else self.command())
+        elif cmd.startswith("ap_set:"):
+            _, key, value = cmd.split(":", 2)
+            self.ap.set(key, value)
 
     def flip_motor(self, idx):
         """Reverse one motor's direction (only while SAFE) and save it to config.toml."""

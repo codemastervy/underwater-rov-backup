@@ -24,6 +24,7 @@ import rov as core   # profile definitions (INPUTS, ACTIONS, DEFAULT_PROFILES) l
 STATUS = "/dev/shm/rov-status.json"
 CMD = "/dev/shm/rov-cmd"
 KEYS = "/dev/shm/rov-keys.json"
+VISION = "/dev/shm/rov-vision.json"
 KB_KEYS = {"w", "a", "s", "d", "r", "f", "space", "shift"}
 W, H = 800, 480
 # Safe area: this monitor crops the edges of the HDMI picture. Increase these if
@@ -237,6 +238,7 @@ class CameraFeed:
         self.proc = None
         self.frame = None
         self.frame_no = 0
+        self.frame_time = 0.0
         self.error = ""
 
     def start(self, w, h, flip="none", picture=None):
@@ -273,12 +275,16 @@ class CameraFeed:
                         raise EOFError
                     data += chunk
                 self.frame = header + bytes(data)
+                self.frame_time = time.monotonic()
                 self.frame_no += 1
         except (EOFError, OSError, ValueError):
             pass
         if self.proc is proc:
             err = proc.stderr.read().decode(errors="replace").strip().splitlines()
             self.error = "Camera stopped" + (f": {err[-1][:60]}" if err else "")
+
+    def alive(self):
+        return self.proc is not None and self.proc.poll() is None
 
     def stop(self):
         if self.proc:
@@ -310,6 +316,11 @@ class Dashboard:
         self.cam = CameraFeed()
         self.cam_flip, self.cam_adj = load_camera_settings()
         self.adj_job = None
+        self.cam_retry_at = 0.0
+        # autopilot state (from rov.py status)
+        self.ap_enabled, self.ap_mode, self.ap_epoch, self.ap_alert = False, None, 0, ""
+        self.ap_settings, self.ap_local_until = {}, 0.0
+        self.vision_result, self.vision_error = {}, ""
 
         c = self.c = tk.Canvas(root, width=CW, height=CH, bg=BG, highlightthickness=0)
         c.pack(expand=True)
@@ -326,6 +337,7 @@ class Dashboard:
         self.small_button(c, 420, 14, 525, 52, "CAMERA", self.show_camera)
         self.small_button(c, 540, 14, 690, 52, "SETUP", self.show_setup)
         self.kb_badge = c.create_text(470, 62, text="", font=fnt(9, "bold"), fill=AMBER)
+        self.ap_badge = c.create_text(615, 62, text="", font=fnt(9, "bold"), fill=GREEN)
 
         # --- thrusters
         c.create_text(20, 84, anchor="w", text="THRUSTERS", font=fnt(10, "bold"), fill=DIM)
@@ -361,7 +373,7 @@ class Dashboard:
             self.triggers.append((fill, x0, lbl))
 
         # --- message line
-        c.create_rectangle(20, 300, 780, 342, fill=PANEL, width=0)
+        self.msg_rect = c.create_rectangle(20, 300, 780, 342, fill=PANEL, width=0)
         self.msg = c.create_text(34, 321, anchor="w", text="", font=fnt(13), fill=FG)
 
         # --- buttons
@@ -380,10 +392,13 @@ class Dashboard:
         self.build_setup()
         self.build_profiles()
         self.build_extras()
+        self.build_autopilot()
+        self.build_mission()
         self.build_camera()
         self.update()
         self.refresh_video()
         self.send_keys()
+        threading.Thread(target=self.vision_loop, daemon=True).start()
 
     # ------------------------------------------------------------ motor setup page
     def small_button(self, c, x0, y0, x1, y1, label, action, color=None, tag=None):
@@ -462,10 +477,11 @@ class Dashboard:
         self.root.after(50, self.send_keys)
 
     def setup_tabs(self, c, active):
-        self.small_button(c, 12, 12, 140, 54, "◀  BACK", self.show_main, tag=f"back_{active}")
-        for x0, x1, name, label, action in ((156, 300, "motors", "MOTORS", self.show_setup),
-                                            (310, 454, "profiles", "PROFILES", self.show_profiles),
-                                            (464, 608, "extras", "EXTRAS", self.show_extras)):
+        self.small_button(c, 12, 12, 112, 54, "◀ BACK", self.show_main, tag=f"back_{active}")
+        for x0, x1, name, label, action in ((122, 242, "motors", "MOTORS", self.show_setup),
+                                            (252, 382, "profiles", "PROFILES", self.show_profiles),
+                                            (392, 502, "extras", "EXTRAS", self.show_extras),
+                                            (512, 662, "autopilot", "AUTOPILOT", self.show_autopilot)):
             self.small_button(c, x0, 12, x1, 54, label, action, color=BLUE if name == active else BG,
                               tag=f"tab_{name}_{active}")
 
@@ -505,22 +521,30 @@ class Dashboard:
         self.root.after(150, lambda: self.c2.itemconfig(rect, fill=BLUE))
 
     def show_page(self, page):
-        if page != "camera":
-            self.cam.stop()
         if page == "profiles" and not self.ed_dirty:
             self.ed_load()
         self.root.focus_set()
         for name, canvas in (("main", self.c), ("setup", self.c2), ("camera", self.c3), ("profiles", self.c4),
-                             ("extras", self.c5)):
+                             ("extras", self.c5), ("autopilot", self.c6), ("mission", self.c7)):
             if name == page:
                 canvas.pack(expand=True)
             else:
                 canvas.pack_forget()
         self.page = page
-        if page == "camera":
+        self.camera_policy()
+
+    def camera_policy(self, restart=False):
+        """The camera runs while the camera page is open, or while a camera autopilot mode needs it."""
+        want = self.page == "camera" or self.ap_mode in core.VISION_MODES
+        if want and (restart or not self.cam.alive()):
+            if not restart and time.monotonic() < self.cam_retry_at:
+                return
+            self.cam_retry_at = time.monotonic() + 3.0
             vx0, vy0, vx1, vy1 = self.c3.coords(self.video_box)
             w, h = int(vx1 - vx0) // 2 * 2, int(vy1 - vy0) // 2 * 2
             self.cam.start(w, h, self.cam_flip, self.cam_adj)
+        elif not want and self.cam.proc:
+            self.cam.stop()
 
     def show_setup(self):
         self.show_page("setup")
@@ -820,6 +844,288 @@ class Dashboard:
             if self.page == "profiles":
                 self.ed_render()
 
+    # ------------------------------------------------------------ autopilot page (mouse only)
+    def show_autopilot(self):
+        self.show_page("autopilot")
+
+    def show_mission(self):
+        self.mi_load()
+        self.show_page("mission")
+
+    AP_MODE_BUTTONS = [("cruise", "CRUISE", "hold thrust"), ("line", "LINE", "follow a line"),
+                       ("target", "TARGET", "follow a colour"), ("heading", "HEADING", "hold direction"),
+                       ("mission", "MISSION", "run the steps")]
+    AP_ROWS = [  # (key, label, kind, column, row)
+        ("heave_trim", "HOVER TRIM", "num", 0, 0), ("pitch_trim", "NOSE TRIM", "num", 0, 1),
+        ("power", "AUTO POWER", "num", 0, 2), ("speed", "AUTO SPEED", "num", 0, 3),
+        ("line_colour", "LINE COLOUR", "colour", 1, 0), ("target_colour", "TARGET COLOUR", "colour", 1, 1),
+        ("target_size", "TARGET DISTANCE", "num", 1, 2), ("steer", "STEERING", "num", 1, 3)]
+
+    @staticmethod
+    def ap_format(key, v):
+        if key in ("line_colour", "target_colour"):
+            return str(v).upper()
+        if key == "steer":
+            return f"x{v:.1f}"
+        if key == "target_size":
+            return f"{v * 100:.0f}% of view"
+        if key.endswith("trim"):
+            return f"{v * 100:+.0f}%"
+        return f"{v * 100:.0f}%"
+
+    def build_autopilot(self):
+        c = self.c6 = tk.Canvas(self.root, width=CW, height=CH, bg=BG, highlightthickness=0)
+        c.create_rectangle(0, 0, W, 66, fill=PANEL, width=0)
+        self.setup_tabs(c, "autopilot")
+        self.ap_state = c.create_text(785, 33, anchor="e", text="", font=fnt(14, "bold"), fill=FG)
+
+        c.create_rectangle(20, 74, 780, 124, fill=PANEL, width=0)
+        c.create_text(36, 92, anchor="w", text="AUTOPILOT", font=fnt(15, "bold"), fill=FG)
+        c.create_text(36, 112, anchor="w", font=fnt(9), fill=DIM,
+                      text="Off at every start-up. Mouse only. STOP / CIRCLE always stops it.")
+        self.ap_master = self.toggle(c, 614, 76, "ap_master", lambda: send(f"ap_enable:{0 if self.ap_enabled else 1}"))
+
+        self.ap_mode_btns = {}
+        for i, (m, label, sub) in enumerate(self.AP_MODE_BUTTONS):
+            x0, tag = 20 + i * 153, f"apm_{m}"
+            rect = c.create_rectangle(x0, 132, x0 + 146, 182, fill=BG, outline=DIM, width=2, tags=tag)
+            c.create_text(x0 + 73, 150, text=label, font=fnt(13, "bold"), fill=FG, tags=tag)
+            c.create_text(x0 + 73, 170, text=sub, font=fnt(8), fill=DIM, tags=tag)
+            c.tag_bind(tag, "<Button-1>", lambda e, m=m: self.ap_click(m))
+            self.ap_mode_btns[m] = rect
+
+        self.ap_info_rect = c.create_rectangle(20, 190, 616, 232, fill=PANEL, width=0)
+        self.ap_info = c.create_text(30, 211, anchor="w", text="", font=fnt(11), fill=FG)
+        c.create_rectangle(628, 190, 780, 232, fill=RED, outline="", tags="ap_off")
+        c.create_text(704, 211, text="AUTO OFF", font=fnt(13, "bold"), fill="white", tags="ap_off")
+        c.tag_bind("ap_off", "<Button-1>", lambda e: send("ap_off"))
+
+        self.ap_vals = {}
+        for key, label, kind, col, row in self.AP_ROWS:
+            x0, y = 20 + col * 384, 240 + row * 40
+            c.create_rectangle(x0, y, x0 + 376, y + 34, fill=PANEL, width=0)
+            c.create_text(x0 + 12, y + 17, anchor="w", text=label, font=fnt(10, "bold"), fill=FG)
+            minus, plus = ("◀", "▶") if kind == "colour" else ("−", "+")
+            self.small_button(c, x0 + 150, y + 3, x0 + 186, y + 31, minus, lambda k=key: self.ap_step(k, -1),
+                              tag=f"aps_{key}_dn")
+            self.ap_vals[key] = c.create_text(x0 + 263, y + 17, text="", font=fnt(11, "bold"), fill=FG)
+            self.small_button(c, x0 + 334, y + 3, x0 + 370, y + 31, plus, lambda k=key: self.ap_step(k, 1),
+                              tag=f"aps_{key}_up")
+        self.small_button(c, 20, 404, 250, 448, "EDIT MISSION", self.show_mission, tag="ap_mission")
+        self.small_button(c, 260, 404, 490, 448, "CAMERA VIEW", self.show_camera, tag="ap_cam")
+        self.ap_msg = c.create_text(502, 426, anchor="w", text="", font=fnt(9), fill=DIM, width=270)
+        c.create_rectangle(1, 1, W - 1, H - 1, outline=DIM, width=1)
+        c.scale("all", 0, 0, SX, SY)
+        c.move("all", OX, OY)
+        c.itemconfig(self.ap_msg, width=int(270 * SX))
+
+    def ap_click(self, mode):
+        send("ap_off" if self.ap_mode == mode else f"ap:{mode}")
+
+    def ap_step(self, key, d):
+        s = self.ap_settings
+        if key not in s:
+            return
+        if key in core.AP_CHOICES:
+            cols = core.AP_COLOURS
+            s[key] = cols[(cols.index(s[key]) + d) % len(cols)] if s[key] in cols else cols[0]
+        else:
+            _, lo, hi, step = core.AP_SETTINGS[key]
+            s[key] = round(max(lo, min(hi, s[key] + d * step)), 3)
+        self.ap_local_until = time.monotonic() + 1.5     # show our value until rov.py has caught up
+        send(f"ap_set:{key}:{s[key]}")
+        self.update_autopilot(read_status(), {})
+
+    def update_autopilot(self, st, ap):
+        c = self.c6
+        if st is None:
+            c.itemconfig(self.ap_state, text="OFFLINE", fill=AMBER)
+        else:
+            c.itemconfig(self.ap_state, text="ARMED" if st["armed"] else "SAFE",
+                         fill=GREEN if st["armed"] else RED)
+        rect, txt = self.ap_master
+        c.itemconfig(rect, fill=GREEN if self.ap_enabled else BG)
+        c.itemconfig(txt, text="ON" if self.ap_enabled else "OFF")
+        for m, r in self.ap_mode_btns.items():
+            c.itemconfig(r, fill=GREEN if self.ap_mode == m else BG if self.ap_enabled else PANEL)
+        for key, item in self.ap_vals.items():
+            if key in self.ap_settings:
+                c.itemconfig(item, text=self.ap_format(key, self.ap_settings[key]))
+        if self.ap_alert:
+            info, color = "⚠ " + self.ap_alert, RED
+        elif self.ap_mode:
+            info, color = f"{self.ap_mode.upper()}: {ap.get('info', '')}", GREEN
+        elif self.ap_enabled:
+            info, color = "ON - trim active. Arm, then click a mode.", FG
+        else:
+            info, color = "OFF - switch on, then arm and click a mode", DIM
+        c.itemconfig(self.ap_info, text=short(info, 60), fill=color)
+        if st is not None:
+            c.itemconfig(self.ap_msg, text=self.vision_error or st.get("msg", ""))
+
+    def update_alerts(self):
+        """Big flashing TAKE CONTROL banner on the main and camera pages while the autopilot is unsure."""
+        a = self.ap_alert
+        flash = int(time.monotonic() * 3) % 2 == 0
+        if a:
+            self.c.itemconfig(self.msg_rect, fill=RED if flash else "#7a1512")
+            self.c.itemconfig(self.msg, text=short("⚠ " + a, 60), fill="white", font=fnt(13, "bold"))
+        else:
+            self.c.itemconfig(self.msg_rect, fill=PANEL)
+            self.c.itemconfig(self.msg, font=fnt(13))
+        self.c3.itemconfig(self.cam_alert_rect, state="normal" if a else "hidden",
+                           fill=RED if flash else "#7a1512")
+        self.c3.itemconfig(self.cam_alert, state="normal" if a else "hidden", text=short("⚠ " + a, 52))
+        self.c3.tag_raise(self.cam_alert_rect)
+        self.c3.tag_raise(self.cam_alert)
+        self.c6.itemconfig(self.ap_info_rect, fill=(RED if flash else "#7a1512") if a else PANEL)
+
+    # ------------------------------------------------------------ vision (runs in a thread)
+    def vision_loop(self):
+        try:
+            import vision as V
+        except Exception as ex:   # numpy missing
+            self.vision_error = f"Camera autopilot unavailable: {ex}"
+            return
+        tracker, last = V.HeadingTracker(), -1
+        while True:
+            time.sleep(0.07)
+            mode = self.ap_mode
+            if mode not in core.VISION_MODES:
+                continue
+            cam = self.cam
+            fresh = cam.frame is not None and time.monotonic() - cam.frame_time < 0.5
+            if fresh and cam.frame_no == last:
+                continue                     # no new frame yet
+            res = {"found": False}
+            if fresh:
+                last = cam.frame_no
+                try:
+                    img = V.to_array(cam.frame)
+                    s = self.ap_settings
+                    if mode == "line":
+                        res = V.find_line(img, s.get("line_colour", "dark"))
+                    elif mode == "target":
+                        res = V.find_target(img, s.get("target_colour", "orange"))
+                    else:
+                        res = tracker.update(img, self.ap_epoch)
+                except Exception as ex:
+                    res = {"found": False, "error": str(ex)}
+            res.update(ts=time.time(), mode=mode, epoch=self.ap_epoch)
+            self.vision_result = res
+            try:
+                with open(VISION + ".tmp", "w") as f:
+                    json.dump(res, f)
+                os.replace(VISION + ".tmp", VISION)
+            except OSError:
+                pass
+
+    # ------------------------------------------------------------ mission editor (mouse only)
+    def mission_path(self):
+        return os.path.join(core.HERE, "mission.json")
+
+    def build_mission(self):
+        c = self.c7 = tk.Canvas(self.root, width=CW, height=CH, bg=BG, highlightthickness=0)
+        c.create_rectangle(0, 0, W, 66, fill=PANEL, width=0)
+        self.small_button(c, 12, 12, 170, 54, "◀ AUTOPILOT", self.show_autopilot, tag="mi_back")
+        c.create_text(190, 33, anchor="w", text="MISSION", font=fnt(16, "bold"), fill=FG)
+        self.mi_state = c.create_text(785, 33, anchor="e", text="", font=fnt(14, "bold"), fill=FG)
+        c.create_text(30, 80, anchor="w", font=fnt(10), fill=DIM,
+                      text="Runs top to bottom when you click MISSION on the AUTOPILOT page (while armed). Saved automatically.")
+        for x, t in ((30, "STEP"), (186, "DO"), (405, "POWER"), (570, "TIME")):
+            c.create_text(x, 100, anchor="w" if x == 30 else "center", text=t, font=fnt(9, "bold"), fill=DIM)
+        self.mi_rows = []
+        for i in range(8):
+            y, row = 110 + i * 36, f"mrow_{i}"
+            c.create_rectangle(20, y, 780, y + 32, fill=PANEL, width=0, tags=row)
+            c.create_text(36, y + 16, anchor="w", text=f"{i + 1}", font=fnt(12, "bold"), fill=FG, tags=row)
+            act = c.create_text(186, y + 16, text="", font=fnt(11, "bold"), fill=FG, tags=row)
+            pw = c.create_text(405, y + 16, text="", font=fnt(11, "bold"), fill=FG, tags=row)
+            secs = c.create_text(570, y + 16, text="", font=fnt(11, "bold"), fill=FG, tags=row)
+            for x0, x1, sym, fn in ((64, 96, "◀", lambda i=i: self.mi_action(i, -1)),
+                                    (276, 308, "▶", lambda i=i: self.mi_action(i, 1)),
+                                    (340, 372, "−", lambda i=i: self.mi_num(i, "power", -0.05)),
+                                    (438, 470, "+", lambda i=i: self.mi_num(i, "power", 0.05)),
+                                    (505, 537, "−", lambda i=i: self.mi_num(i, "secs", -0.5)),
+                                    (603, 635, "+", lambda i=i: self.mi_num(i, "secs", 0.5)),
+                                    (700, 768, "✕", lambda i=i: self.mi_delete(i))):
+                t = f"mi_{i}_{x0}"
+                c.create_rectangle(x0, y + 3, x1, y + 29, fill=BG, outline=DIM, width=2, tags=(row, t))
+                c.create_text((x0 + x1) / 2, y + 16, text=sym, font=fnt(11, "bold"), fill=FG, tags=(row, t))
+                c.tag_bind(t, "<Button-1>", lambda e, fn=fn: fn())
+            self.mi_rows.append((row, act, pw, secs))
+        self.small_button(c, 20, 404, 250, 448, "+ ADD STEP", self.mi_add, tag="mi_add")
+        self.small_button(c, 260, 404, 490, 448, "RESET TO EXAMPLE", self.mi_reset, tag="mi_reset")
+        self.mi_msg = c.create_text(502, 426, anchor="w", text="", font=fnt(10), fill=DIM)
+        c.create_rectangle(1, 1, W - 1, H - 1, outline=DIM, width=1)
+        c.scale("all", 0, 0, SX, SY)
+        c.move("all", OX, OY)
+        self.mi_steps = []
+
+    def mi_load(self):
+        try:
+            with open(self.mission_path()) as f:
+                self.mi_steps = core.clean_mission(json.load(f))
+        except (OSError, ValueError):
+            self.mi_steps = [dict(st) for st in core.DEFAULT_MISSION]
+        self.mi_render()
+
+    def mi_save(self):
+        try:
+            with open(self.mission_path() + ".tmp", "w") as f:
+                json.dump({"steps": self.mi_steps}, f, indent=1)
+            os.replace(self.mission_path() + ".tmp", self.mission_path())
+            total = sum(st["secs"] for st in self.mi_steps)
+            self.c7.itemconfig(self.mi_msg, text=f"Saved - {len(self.mi_steps)} steps, {total:.1f} s", fill=GREEN)
+        except OSError as ex:
+            self.c7.itemconfig(self.mi_msg, text=f"Could not save: {ex}", fill=RED)
+        self.mi_render()
+
+    def mi_action(self, i, d):
+        if i < len(self.mi_steps):
+            order = core.MISSION_ORDER
+            st = self.mi_steps[i]
+            st["do"] = order[(order.index(st["do"]) + d) % len(order)]
+            self.mi_save()
+
+    def mi_num(self, i, key, d):
+        if i < len(self.mi_steps):
+            lo, hi = (0.0, 1.0) if key == "power" else (0.5, 60.0)
+            st = self.mi_steps[i]
+            st[key] = round(max(lo, min(hi, st[key] + d)), 2)
+            self.mi_save()
+
+    def mi_delete(self, i):
+        if i < len(self.mi_steps):
+            del self.mi_steps[i]
+            self.mi_save()
+
+    def mi_add(self):
+        if len(self.mi_steps) >= 8:
+            self.c7.itemconfig(self.mi_msg, text="8 steps is the most that fits", fill=AMBER)
+            return
+        self.mi_steps.append({"do": "forward", "power": 0.4, "secs": 2.0})
+        self.mi_save()
+
+    def mi_reset(self):
+        self.mi_steps = [dict(st) for st in core.DEFAULT_MISSION]
+        self.mi_save()
+
+    def mi_render(self):
+        c = self.c7
+        for i, (row, act, pw, secs) in enumerate(self.mi_rows):
+            if i < len(self.mi_steps):
+                st = self.mi_steps[i]
+                c.itemconfig(row, state="normal")
+                c.itemconfig(act, text=st["do"].replace("_", " ").upper())
+                c.itemconfig(pw, text="—" if st["do"] == "hover" else f"{st['power'] * 100:.0f}%")
+                c.itemconfig(secs, text=f"{st['secs']:.1f} s")
+            else:
+                c.itemconfig(row, state="hidden")
+        st = read_status()
+        if st is not None:
+            c.itemconfig(self.mi_state, text="ARMED" if st["armed"] else "SAFE", fill=GREEN if st["armed"] else RED)
+
     def show_camera(self):
         self.show_page("camera")
 
@@ -860,6 +1166,14 @@ class Dashboard:
         vx0, vy0, _, _ = c.coords(self.video_box)
         self.video_img = tk.PhotoImage()
         self.video_item = c.create_image(vx0, vy0, anchor="nw", image=self.video_img)
+        # autopilot: what the camera is tracking, and the take-control banner
+        self.ov_pts = [c.create_oval(0, 0, 0, 0, outline=AMBER, width=3, state="hidden") for _ in range(3)]
+        self.ov_line = c.create_line(0, 0, 0, 0, fill=AMBER, width=3, state="hidden")
+        self.ov_target = c.create_oval(0, 0, 0, 0, outline=GREEN, width=3, state="hidden")
+        self.ov_text = c.create_text(vx0 + 8 * SX, vy0 + 40 * SY, anchor="w", text="", font=fnt(11, "bold"),
+                                     fill=GREEN)
+        self.cam_alert_rect = c.create_rectangle(X(0), Y(410), X(600), Y(450), fill=RED, width=0, state="hidden")
+        self.cam_alert = c.create_text(X(300), Y(430), text="", font=fnt(14, "bold"), fill="white", state="hidden")
         c.tag_raise(self.no_signal)
         c.tag_raise(self.flip_label)
         c.tag_raise("pic")
@@ -917,16 +1231,16 @@ class Dashboard:
 
     def restart_video(self):
         self.adj_job = None
-        if self.page == "camera":
-            self.show_page("camera")
+        if self.cam.alive():
+            self.camera_policy(restart=True)
 
     def flip_camera(self):
         """FLIP button: normal -> upside down -> mirrored -> normal. Saved in camera.json."""
         self.cam_flip = FLIP_ORDER[(FLIP_ORDER.index(self.cam_flip) + 1) % len(FLIP_ORDER)]
         save_camera_settings(self.cam_flip, self.cam_adj)
         self.c3.itemconfig(self.flip_label, text=FLIP_TEXT[self.cam_flip])
-        if self.page == "camera":
-            self.show_page("camera")   # restart the video with the new setting
+        if self.cam.alive():
+            self.camera_policy(restart=True)   # restart the video with the new setting
 
     def refresh_video(self):
         if self.page == "camera":
@@ -940,7 +1254,37 @@ class Dashboard:
                     pass
             elif cam.error:
                 self.c3.itemconfig(self.no_signal, text=cam.error)
+            self.draw_overlay()
         self.root.after(30, self.refresh_video)
+
+    def draw_overlay(self):
+        c = self.c3
+        vx0, vy0, vx1, vy1 = c.coords(self.video_box)
+        vw, vh = vx1 - vx0, vy1 - vy0
+        r = self.vision_result if self.ap_mode in core.VISION_MODES else {}
+        found = r.get("found")
+        pts = r.get("points", []) if found and self.ap_mode == "line" else []
+        for i, item in enumerate(self.ov_pts):
+            if i < len(pts):
+                x, y = vx0 + pts[i][0] * vw, vy0 + pts[i][1] * vh
+                c.coords(item, x - 8, y - 8, x + 8, y + 8)
+            c.itemconfig(item, state="normal" if i < len(pts) else "hidden")
+        if len(pts) >= 2:
+            c.coords(self.ov_line, *[v for x, y in pts for v in (vx0 + x * vw, vy0 + y * vh)])
+        c.itemconfig(self.ov_line, state="normal" if len(pts) >= 2 else "hidden")
+        if found and self.ap_mode == "target":
+            x, y = vx0 + (r["x"] + 1) / 2 * vw, vy0 + (r["y"] + 1) / 2 * vh
+            rad = max(10, (r["area"] ** 0.5) * vw / 2)
+            c.coords(self.ov_target, x - rad, y - rad, x + rad, y + rad)
+        c.itemconfig(self.ov_target, state="normal" if found and self.ap_mode == "target" else "hidden")
+        if self.ap_mode:
+            word = {"line": "LINE", "target": "TARGET", "heading": "HEADING HOLD", "cruise": "CRUISE",
+                    "mission": "MISSION"}[self.ap_mode]
+            ok = found or self.ap_mode not in core.VISION_MODES
+            c.itemconfig(self.ov_text, text=f"AUTO {word}" + ("" if ok else "  - NOT SURE"),
+                         fill=GREEN if ok else RED)
+        else:
+            c.itemconfig(self.ov_text, text="")
 
     def update_camera(self, st):
         c = self.c3
@@ -1000,6 +1344,13 @@ class Dashboard:
         c = self.c
         st = read_status()
         self.kb_on = bool(st and st.get("keyboard_drive"))
+        ap = (st or {}).get("autopilot") or {}
+        self.ap_enabled, self.ap_mode = bool(ap.get("enabled")), ap.get("mode")
+        self.ap_epoch, self.ap_alert = ap.get("epoch", 0), ap.get("alert", "")
+        if time.monotonic() > self.ap_local_until and ap.get("settings"):
+            self.ap_settings = dict(ap["settings"])
+        self.camera_policy()
+        self.update_autopilot(st, ap)
         self.update_extras(st)
         self.update_setup(st)
         self.update_camera(st)
@@ -1062,6 +1413,8 @@ class Dashboard:
             elif not armed and st["controller"] and "STOP" not in msg and "Centre" not in msg:
                 msg = "Press OPTIONS on the controller to arm"
             c.itemconfig(self.msg, text=short(msg))
+            c.itemconfig(self.ap_badge, text=f"AUTO: {self.ap_mode.upper()}" if self.ap_mode
+                         else "AUTOPILOT ON" if self.ap_enabled else "")
             keys = st.get("keys") or []
             c.itemconfig(self.kb_badge, text=("KEYS: " + " ".join(k.upper() for k in keys)) if keys
                          else "KEYBOARD DRIVE ON" if self.kb_on else "")
@@ -1093,6 +1446,7 @@ class Dashboard:
                 c.itemconfig(self.tilt_txt, text="D-pad = " + (" + ".join(w for w in words if w) or "—"), fill=DIM)
             for (fill, x0, _), k in zip(self.triggers, ("l2", "r2")):
                 c.coords(fill, X(x0), Y(248), X(x0 + 96 * ax.get(k, 0)), Y(262))
+        self.update_alerts()      # last, so the TAKE CONTROL banner wins over the normal message
         self.root.after(100, self.update)
 
 
