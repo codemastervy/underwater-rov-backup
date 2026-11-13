@@ -60,6 +60,16 @@ Open **ROV Backup** from the app menu (or `bash run.sh`). The controls are the s
 | SQUARE | camera page on/off |
 | R1 / L1 | speed up/down |
 
+**Keyboard drive** (switch on in SETUP › EXTRAS): W/S forward/back, A/D turn, Space up, Shift down, R/F tilt,
+**Enter = ARM**, **Esc = STOP**. If the window closes or freezes, the keys count as released (and with no controller the
+motors disarm).
+
+**Arm sound:** when armed, the motors play a short 3-note tune (no speaker: a tiny audio-frequency PWM makes the motors
+whistle). On/off, volume and TEST are in SETUP › EXTRAS. **This needs the updated firmware: run `bash upload-mega.sh`
+again after pulling this version.**
+
+**Camera picture:** CAMERA › PICTURE adjusts gain (ISO), brightness, contrast, colour and warmth (saved).
+
 `bash run.sh --fullscreen` for full screen, `--size 1600x960` for a bigger window.
 
 **Camera:** plug the capture card into the laptop. It's picked automatically (the laptop's own webcam is skipped).

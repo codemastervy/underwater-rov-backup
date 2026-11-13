@@ -17,6 +17,14 @@ Controls (default):
                      and D-pad do is set per profile on the case screen: SETUP > PROFILES.
                      Built-in: Tank (stick per side) and Standard (drive+turn / up-down).
 
+Keyboard drive (switch it on on the case screen: SETUP > EXTRAS):
+  W/S forward/back, A/D turn, Space up, Shift down, R/F tilt, Enter ARM, Esc STOP.
+  The dashboard sends the keys; if it stops sending for 0.5 s the keys count as released
+  (and with no controller connected the motors disarm).
+
+Arm sound: when armed, the motors play a short tune (quiet audio-frequency PWM, like a
+3D printer's stepper "music"). On/off, volume and TEST are on SETUP > EXTRAS.
+
 Safety: starts disarmed; disarms on controller loss, heartbeat loss, panel switch off,
 or program exit. The BTS7960 enable line is only HIGH while armed.
 
@@ -42,6 +50,14 @@ AXES = ("surge", "yaw", "heave", "sway", "pitch")
 TICK = 0.02  # 50 Hz control loop
 STATUS_PATH = "/dev/shm/rov-status.json"   # read by rov_gui.py
 CMD_PATH = "/dev/shm/rov-cmd"              # written by rov_gui.py
+KEYS_PATH = "/dev/shm/rov-keys.json"       # keyboard drive: keys held down, written by rov_gui.py
+
+# Keyboard drive: key -> (motion axis, amount)
+KEY_AXES = {"w": ("surge", 1.0), "s": ("surge", -1.0), "d": ("yaw", 1.0), "a": ("yaw", -1.0),
+            "space": ("heave", 1.0), "shift": ("heave", -1.0), "r": ("pitch", 0.6), "f": ("pitch", -0.6)}
+
+# Motor "music": (frequency Hz, seconds); 0 Hz = silence.
+TUNES = {"arm": [(1047, 0.10), (0, 0.03), (1319, 0.10), (0, 0.03), (1568, 0.20)]}
 
 # ---- drive profiles (edited on the case screen: SETUP > PROFILES; stored in profiles.json) ----
 # Controls, read so that stick up / stick right / trigger pressed / D-pad up / D-pad right = positive.
@@ -129,6 +145,13 @@ class LgpioBackend:
         else:
             self.lg.tx_pwm(self.h, pin, self.freq, min(100, duty))
 
+    def tone(self, pin, freq, duty):
+        """PWM at an audio frequency (arm sound). pwm() puts the pin back to the normal frequency."""
+        if duty <= 0 or freq <= 0:
+            self.pwm(pin, 0)
+        else:
+            self.lg.tx_pwm(self.h, pin, max(20, min(10000, freq)), min(100, duty))
+
     def close(self):
         for pin in self.claimed:
             try:
@@ -156,6 +179,7 @@ class MegaBackend:
         self.port = None
         self.duty = {}            # pwm pin -> duty 0..100
         self.en_pin, self.en_val = 22, 0
+        self.tone_freq = 0        # >0: arm sound playing, motor pins run at this frequency
         self.last_rx = 0.0
         self.next_try = 0.0
         self.rx = b""
@@ -176,7 +200,15 @@ class MegaBackend:
         self.en_pin, self.en_val = pin, 1 if value else 0
 
     def pwm(self, pin, duty):
+        if duty > 0:
+            self.tone_freq = 0    # normal driving again: Mega goes back to its normal PWM
         self.duty[pin] = max(0, min(100, duty))
+
+    def tone(self, pin, freq, duty):
+        """Arm sound: run the motor pins at an audio frequency (Mega 'T' frame)."""
+        if freq > 0:
+            self.tone_freq = int(max(40, min(10000, freq)))
+        self.duty[pin] = max(0, min(100, duty)) if freq > 0 else 0
 
     # -- serial link --
     def find_port(self):
@@ -228,7 +260,9 @@ class MegaBackend:
             self.connect()
             if self.ser is None:
                 return
-        frame = f"F {self.en_pin} {self.en_val if self.ready() else 0} " + " ".join(
+        head = f"T {self.en_pin} {self.en_val if self.ready() else 0} {self.tone_freq} " if self.tone_freq \
+            else f"F {self.en_pin} {self.en_val if self.ready() else 0} "
+        frame = head + " ".join(
             f"{p}:{round(d * 2.55)}" for p, d in sorted(self.duty.items())) + "\n"
         try:
             data = self.ser.read(256)
@@ -294,6 +328,9 @@ class FakeBackend:
 
     def pwm(self, pin, duty):
         self.state[pin] = duty
+
+    def tone(self, pin, freq, duty):
+        self.state[pin] = duty if freq > 0 else 0
 
     def close(self):
         pass
@@ -491,6 +528,12 @@ class ROV:
         self.pad = None
         self.running = True
         self.status_msg = ""
+        self.kbd_enabled = bool(c.get("keyboard_drive", False))
+        self.kbd_keys = set()
+        self.kbd_live = False
+        self.sound_on = bool(c.get("arm_sound", True))
+        self.sound_volume = max(1, min(15, int(c.get("sound_volume", 5))))
+        self.tune = None
         try:
             os.remove(CMD_PATH)  # ignore any stale screen command from before startup
         except OSError:
@@ -511,6 +554,8 @@ class ROV:
         return self.switch_pin < 0 or self.gpio.read(self.switch_pin) == 0
 
     def sticks_centred(self):
+        if not self.pad:
+            return True
         a = self.pad.axes
         return (all(abs(a[k]) < self.deadzone * 2 for k in ("lx", "ly", "rx", "ry"))
                 and a["l2"] < 0.1 and a["r2"] < 0.1 and abs(a.get("dy", 0)) < 0.5 and abs(a.get("dx", 0)) < 0.5)
@@ -518,19 +563,28 @@ class ROV:
     def output_ready(self):
         return getattr(self.gpio, "ready", lambda: True)()
 
-    def arm(self):
-        if not self.output_ready():
+    def arm(self, source="controller"):
+        if self.armed:
+            return
+        if source == "keyboard" and not (self.kbd_enabled and self.kbd_live):
+            self.say("Keyboard drive is off (SETUP > EXTRAS)")
+        elif not self.output_ready():
             self.say("Can't arm: " + getattr(self.gpio, "describe", lambda: "motor output not ready")())
         elif not self.switch_on():
             self.say("Panel ARM switch is OFF - can't arm")
         elif not self.sticks_centred():
             self.say("Centre the sticks and release triggers to arm")
+        elif self.kbd_live and self.kbd_keys:
+            self.say("Let go of the keys to arm")
         else:
+            self.end_tune()
             self.armed = True
             self.gpio.write(self.enable_pin, 1)
             if self.led_pin >= 0:
                 self.gpio.write(self.led_pin, 1)
-            self.say("ARMED")
+            self.say("ARMED" + (" (keyboard)" if source == "keyboard" else ""))
+            if self.sound_on:
+                self.start_tune("arm")
 
     def disarm(self, why):
         # Cut the drivers' enable line FIRST so the motors are off even if a PWM write fails.
@@ -548,6 +602,7 @@ class ROV:
         if self.armed:
             self.say(f"DISARMED ({why})")
         self.armed = False
+        self.tune = None
 
     def say(self, msg):
         self.status_msg = msg
@@ -635,6 +690,8 @@ class ROV:
                     lines[k] = f"{key} = {value}"
                     break
             else:
+                if section not in lines:
+                    lines += ["", section]
                 lines.insert(lines.index(section) + 1, f"{key} = {value}")
             tmp = self.config_path + ".tmp"
             with open(tmp, "w") as f:
@@ -670,16 +727,107 @@ class ROV:
         return a.get("dx", 0.0)
 
     def command(self):
-        """Turn controller positions into motion (surge/yaw/heave/sway/pitch) using the active profile."""
+        """Turn controller positions (active profile) + held keyboard keys into motion
+        (surge/yaw/heave/sway/pitch)."""
         cmd = dict.fromkeys(AXES, 0.0)
-        for key, m in self.active_profile()["map"].items():
+        for key, m in (self.active_profile()["map"].items() if self.pad else ()):
             vec = ACTIONS.get(m["action"], {})
             if not vec:
                 continue
             v = self.input_value(key) * (-1.0 if m["invert"] else 1.0) * m["power"]
             for axis, w in vec.items():
                 cmd[axis] += v * w
+        if self.kbd_live:
+            for k in self.kbd_keys:
+                axis, v = KEY_AXES[k]
+                cmd[axis] += v
         return {ax: self.inv[ax] * max(-1.0, min(1.0, cmd[ax])) for ax in AXES}
+
+    # ---- keyboard drive ----
+    def read_keys(self):
+        """Keys held on the case keyboard (sent by the dashboard ~20x a second)."""
+        self.kbd_live = False
+        self.kbd_keys = set()
+        if not self.kbd_enabled:
+            return
+        try:
+            with open(KEYS_PATH) as f:
+                st = json.load(f)
+        except (OSError, ValueError):
+            return
+        if abs(time.time() - float(st.get("ts", 0))) > self.hb_timeout:
+            return
+        self.kbd_live = True
+        self.kbd_keys = {k for k in st.get("keys", []) if k in KEY_AXES}
+
+    def set_keyboard(self, on):
+        if self.armed:
+            self.disarm("keyboard drive switched")
+        self.kbd_enabled = on
+        saved = self.save_setting("keyboard_drive", "true" if on else "false", section="[control]")
+        self.say(("Keyboard drive ON: Enter = arm, Esc = stop" if on else "Keyboard drive OFF")
+                 + ("" if saved else " (could not save!)"))
+
+    # ---- arm sound (motor music) ----
+    def set_sound(self, on=None, volume=None):
+        if on is not None:
+            self.sound_on = on
+            self.save_setting("arm_sound", "true" if on else "false", section="[control]")
+        if volume is not None:
+            self.sound_volume = max(1, min(15, volume))
+            self.save_setting("sound_volume", str(self.sound_volume), section="[control]")
+        self.say(f"Arm sound {'ON' if self.sound_on else 'OFF'}, volume {self.sound_volume}")
+
+    def test_sound(self):
+        """Play the arm tune while SAFE (drivers enabled just for the tune)."""
+        if self.armed:
+            self.say("Sound test only while SAFE")
+        elif not self.output_ready():
+            self.say("Can't play: " + getattr(self.gpio, "describe", lambda: "motor output not ready")())
+        elif not self.switch_on():
+            self.say("Panel ARM switch is OFF")
+        else:
+            self.gpio.write(self.enable_pin, 1)
+            self.start_tune("arm", test=True)
+            self.say("Playing arm sound...")
+
+    def start_tune(self, name, test=False):
+        self.tune = {"notes": TUNES[name], "t0": time.monotonic(), "cur": None, "test": test}
+
+    def end_tune(self):
+        if not self.tune:
+            return
+        test, self.tune = self.tune["test"], None
+        for t in self.thrusters:
+            t.stop(self.gpio)
+        if test and not self.armed:
+            self.gpio.write(self.enable_pin, 0)
+
+    def play_tune(self):
+        """Advance the tune. Each note drives every motor at the note's frequency with a tiny duty,
+        alternating direction note by note so the props don't creep."""
+        elapsed = time.monotonic() - self.tune["t0"]
+        notes = self.tune["notes"]
+        i, end = 0, 0.0
+        for i, (_, dur) in enumerate(notes):
+            end += dur
+            if elapsed < end:
+                break
+        else:
+            self.end_tune()
+            return
+        if i == self.tune["cur"]:
+            return
+        self.tune["cur"] = i
+        freq = notes[i][0]
+        for t in self.thrusters:
+            on, off = (t.rpwm, t.lpwm) if i % 4 < 2 else (t.lpwm, t.rpwm)
+            self.gpio.pwm(off, 0)
+            if freq:
+                self.gpio.tone(on, freq, self.sound_volume)
+            else:
+                self.gpio.pwm(on, 0)
+            t._sent = (-1, -1)   # force a fresh write when driving resumes
 
     # ---- loop ----
     def run(self):
@@ -736,7 +884,13 @@ class ROV:
             self.lose_pad("heartbeat timeout")
         if self.armed and not self.switch_on():
             self.disarm("panel switch off")
-        if not self.armed or not self.pad:
+        self.read_keys()
+        if self.armed and not self.pad and not self.kbd_live:
+            self.disarm("keyboard link lost" if self.kbd_enabled else "no controller")
+        if self.tune:
+            self.play_tune()
+            return
+        if not self.armed:
             return
         targets = mix(self.thrusters, self.command(), self.levels[self.level])
         step = self.ramp_rate * TICK
@@ -762,6 +916,12 @@ class ROV:
             "switch_on": self.switch_on(),
             "output_ok": bool(self.output_ready()),
             "output": getattr(self.gpio, "describe", lambda: "Raspberry Pi GPIO")(),
+            "keyboard_drive": self.kbd_enabled,
+            "keyboard_live": self.kbd_live,
+            "keys": sorted(self.kbd_keys),
+            "arm_sound": self.sound_on,
+            "sound_volume": self.sound_volume,
+            "playing": bool(self.tune),
             "msg": self.status_msg,
         }
         try:
@@ -772,7 +932,7 @@ class ROV:
             pass
 
     def check_screen_commands(self):
-        """Commands from the GUI: 'stop', 'speed+', 'speed-'. (Arming is controller-only.)"""
+        """Commands from the GUI. Arming from the screen is only possible with keyboard drive ON (Enter)."""
         try:
             with open(CMD_PATH) as f:
                 cmd = f.read().strip()
@@ -781,7 +941,7 @@ class ROV:
             return
         if cmd == "stop":
             self.disarm("screen STOP button")
-            self.say("STOPPED from screen - press OPTIONS on controller to re-arm")
+            self.say("STOPPED - press OPTIONS" + (" or Enter" if self.kbd_enabled else "") + " to re-arm")
         elif cmd == "speed+":
             self.change_speed(1)
         elif cmd == "speed-":
@@ -792,6 +952,17 @@ class ROV:
             self.reload_profiles(int(cmd.split(":")[1]))
         elif cmd.startswith("invert:"):
             self.flip_motor(int(cmd.split(":")[1]))
+        elif cmd == "kbd_arm":
+            self.read_keys()
+            self.arm(source="keyboard")
+        elif cmd.startswith("keyboard:"):
+            self.set_keyboard(cmd.endswith(":1"))
+        elif cmd.startswith("sound:"):
+            self.set_sound(on=cmd.endswith(":1"))
+        elif cmd.startswith("volume:"):
+            self.set_sound(volume=int(cmd.split(":")[1]))
+        elif cmd == "sound_test":
+            self.test_sound()
 
     def flip_motor(self, idx):
         """Reverse one motor's direction (only while SAFE) and save it to config.toml."""

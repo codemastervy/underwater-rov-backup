@@ -3,10 +3,12 @@
 Run with --fullscreen for full screen, --size 1200x720 for another window size.
 
 Shows what rov.py (the systemd service) is doing and offers STOP / speed buttons.
-It never arms the motors: arming is controller-only (OPTIONS), so a stray click
-can't start the props. If this window closes, the ROV keeps running normally.
+No mouse click can arm the motors. Arming is on the controller (OPTIONS), or Enter on the
+keyboard when KEYBOARD DRIVE is switched on (SETUP > EXTRAS). If this window closes, the ROV
+keeps running normally (keyboard driving stops).
 
-Keys: Space = STOP, +/- = speed, P = profile, C = camera, Esc = leave full screen, F11 = full screen.
+Keys: Esc = STOP, Space = STOP (keyboard drive off), +/- = speed, P = profile, C = camera, F11 = full screen.
+Keyboard drive on: W/S forward/back, A/D turn, Space up, Shift down, R/F tilt, Enter = ARM.
 """
 import glob
 import json
@@ -21,6 +23,8 @@ import rov as core   # profile definitions (INPUTS, ACTIONS, DEFAULT_PROFILES) l
 
 STATUS = "/dev/shm/rov-status.json"
 CMD = "/dev/shm/rov-cmd"
+KEYS = "/dev/shm/rov-keys.json"
+KB_KEYS = {"w", "a", "s", "d", "r", "f", "space", "shift"}
 W, H = 800, 480
 # Safe area: this monitor crops the edges of the HDMI picture. Increase these if
 # anything is still cut off (left, top, right, bottom, in pixels). Or run with
@@ -168,24 +172,59 @@ FLIP_ORDER = ["none", "rotate", "mirror"]
 FLIP_FILTERS = {"none": [], "rotate": ["hflip", "vflip"], "mirror": ["hflip"]}
 FLIP_TEXT = {"none": "", "rotate": "UPSIDE DOWN", "mirror": "MIRRORED"}
 
+# Picture adjustments (done in ffmpeg, so they work with any capture card):
+# key, label, min, max, step, default, how to show the value
+PICTURE = [
+    ("gain", "GAIN (ISO)", 0.25, 4.0, 0.25, 1.0, lambda v: f"x{v:.2f}"),
+    ("brightness", "BRIGHTNESS", -0.5, 0.5, 0.05, 0.0, lambda v: f"{round(v * 20):+d}"),
+    ("contrast", "CONTRAST", 0.5, 2.0, 0.1, 1.0, lambda v: f"x{v:.1f}"),
+    ("saturation", "COLOUR", 0.0, 3.0, 0.1, 1.0, lambda v: f"x{v:.1f}"),
+    ("warmth", "WARMTH", -1.0, 1.0, 0.1, 0.0, lambda v: f"{round(v * 10):+d}"),
+]
+PICTURE_DEFAULT = {k: d for k, _, _, _, _, d, _ in PICTURE}
+
+
+def picture_filters(adj):
+    """ffmpeg filters for the picture settings (none when everything is at default)."""
+    a = dict(PICTURE_DEFAULT, **adj)
+    out = []
+    g, w = a["gain"], a["warmth"]
+    if abs(g - 1) > 1e-6 or abs(w) > 1e-6:
+        # gain = brighter sensor (like ISO); warmth = more red / less blue (water makes things blue-green)
+        out.append(f"colorchannelmixer=rr={g * (1 + 0.35 * w):.3f}:gg={g:.3f}:bb={g * (1 - 0.35 * w):.3f}")
+    if abs(a["brightness"]) > 1e-6 or abs(a["contrast"] - 1) > 1e-6 or abs(a["saturation"] - 1) > 1e-6:
+        out.append(f"eq=brightness={a['brightness']:.2f}:contrast={a['contrast']:.2f}"
+                   f":saturation={a['saturation']:.2f}")
+    return out
+
 
 def camera_flip_path():
     return os.path.join(core.HERE, "camera.json")
 
 
-def load_camera_flip():
+def load_camera_settings():
+    """camera.json -> (flip, picture adjustments)."""
     try:
         with open(camera_flip_path()) as f:
-            v = json.load(f).get("flip", "none")
-        return v if v in FLIP_ORDER else "none"
-    except (OSError, ValueError, AttributeError):
-        return "none"
+            data = json.load(f)
+    except (OSError, ValueError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    flip = data.get("flip", "none")
+    adj = {}
+    for k, _, lo, hi, _, d, _ in PICTURE:
+        try:
+            adj[k] = max(lo, min(hi, float((data.get("picture") or {}).get(k, d))))
+        except (TypeError, ValueError, AttributeError):
+            adj[k] = d
+    return (flip if flip in FLIP_ORDER else "none"), adj
 
 
-def save_camera_flip(v):
+def save_camera_settings(flip, adj):
     try:
         with open(camera_flip_path() + ".tmp", "w") as f:
-            json.dump({"flip": v}, f)
+            json.dump({"flip": flip, "picture": adj}, f)
         os.replace(camera_flip_path() + ".tmp", camera_flip_path())
     except OSError:
         pass
@@ -200,7 +239,7 @@ class CameraFeed:
         self.frame_no = 0
         self.error = ""
 
-    def start(self, w, h, flip="none"):
+    def start(self, w, h, flip="none", picture=None):
         self.stop()
         dev = find_camera()
         if not dev:
@@ -210,7 +249,7 @@ class CameraFeed:
         self.w, self.h = w, h
         cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-fflags", "nobuffer", "-flags", "low_delay",
                "-f", "v4l2", "-input_format", "mjpeg", "-video_size", "640x480", "-framerate", "30",
-               "-i", dev, "-vf", ",".join(FLIP_FILTERS[flip] + [f"scale={w}:{h}"]), "-f", "image2pipe", "-vcodec", "ppm", "-"]
+               "-i", dev, "-vf", ",".join(FLIP_FILTERS[flip] + [f"scale={w}:{h}"] + picture_filters(picture or {})), "-f", "image2pipe", "-vcodec", "ppm", "-"]
         try:
             self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0,
                                          preexec_fn=_die_with_parent)
@@ -258,19 +297,19 @@ class Dashboard:
         else:
             root.geometry(f"{CW}x{CH}")
             root.resizable(False, False)
-        root.bind("<Escape>", lambda e: root.attributes("-fullscreen", False))
-        root.bind("<F11>", lambda e: root.attributes("-fullscreen", True))
-        key = self.key
-        root.bind("<space>", key(lambda: self.press("stop")))
-        root.bind("<plus>", key(lambda: self.press("speed+")))
-        root.bind("<equal>", key(lambda: self.press("speed+")))
-        root.bind("<minus>", key(lambda: self.press("speed-")))
-        root.bind("<p>", key(lambda: self.press("profile")))
-        root.bind("<c>", key(lambda: self.toggle_camera()))
+        # one handler for all keys (Tk runs only the most specific binding per widget, so
+        # separate <space>/<w>/... bindings would hide keys from the keyboard-drive handler)
+        root.bind("<KeyPress>", self.on_key)
+        root.bind("<KeyRelease>", self.on_key_release)
+        root.bind("<FocusOut>", lambda e: self.kb_release_all())
+        self.kb_on = False          # KEYBOARD DRIVE switch (comes from rov.py status)
+        self.kb_down = set()
+        self.kb_jobs = {}
         self.page = "main"
         self.last_view_toggle = None
         self.cam = CameraFeed()
-        self.cam_flip = load_camera_flip()
+        self.cam_flip, self.cam_adj = load_camera_settings()
+        self.adj_job = None
 
         c = self.c = tk.Canvas(root, width=CW, height=CH, bg=BG, highlightthickness=0)
         c.pack(expand=True)
@@ -286,6 +325,7 @@ class Dashboard:
         self.speed_txt = c.create_text(785, 44, anchor="e", text="--", font=fnt(24, "bold"), fill=FG)
         self.small_button(c, 420, 14, 525, 52, "CAMERA", self.show_camera)
         self.small_button(c, 540, 14, 690, 52, "SETUP", self.show_setup)
+        self.kb_badge = c.create_text(470, 62, text="", font=fnt(9, "bold"), fill=AMBER)
 
         # --- thrusters
         c.create_text(20, 84, anchor="w", text="THRUSTERS", font=fnt(10, "bold"), fill=DIM)
@@ -326,7 +366,7 @@ class Dashboard:
 
         # --- buttons
         self.buttons = {}
-        self.button(20, 356, 330, 466, "stop", "STOP", "disarm motors  (Space)", RED)
+        self.stop_lbl = self.button(20, 356, 330, 466, "stop", "STOP", "disarm motors  (Esc)", RED)
         self.profile_lbl = self.button(345, 356, 555, 466, "profile", "PROFILE", "△ next", PANEL)
         self.button(570, 356, 670, 466, "speed-", "SPEED −", "(L1)", PANEL)
         self.button(680, 356, 780, 466, "speed+", "SPEED +", "(R1)", PANEL)
@@ -339,9 +379,11 @@ class Dashboard:
 
         self.build_setup()
         self.build_profiles()
+        self.build_extras()
         self.build_camera()
         self.update()
         self.refresh_video()
+        self.send_keys()
 
     # ------------------------------------------------------------ motor setup page
     def small_button(self, c, x0, y0, x1, y1, label, action, color=None, tag=None):
@@ -352,18 +394,78 @@ class Dashboard:
         c.tag_bind(tag, "<Button-1>", lambda e: action())
         return tag
 
-    def key(self, fn):
-        """Keyboard shortcut handler that does nothing while typing in a text box."""
-        def handler(event):
-            if isinstance(self.root.focus_get(), tk.Entry):
-                return
-            fn()
-        return handler
+    # ------------------------------------------------------------ keyboard
+    @staticmethod
+    def kb_name(event):
+        k = event.keysym.lower()
+        return "shift" if k in ("shift_l", "shift_r") else k
+
+    def typing(self):
+        try:
+            return isinstance(self.root.focus_get(), tk.Entry)
+        except (KeyError, tk.TclError):
+            return False
+
+    def on_key(self, event):
+        if self.typing():
+            return
+        k = self.kb_name(event)
+        if k == "escape":
+            self.press("stop")
+        elif k == "f11":
+            self.root.attributes("-fullscreen", not self.root.attributes("-fullscreen"))
+        elif self.kb_on and k in KB_KEYS:
+            job = self.kb_jobs.pop(k, None)
+            if job:
+                self.root.after_cancel(job)
+            self.kb_down.add(k)
+        elif self.kb_on and k in ("return", "kp_enter"):
+            send("kbd_arm")
+        elif k == "space":
+            self.press("stop")
+        elif k in ("plus", "equal", "kp_add"):
+            self.press("speed+")
+        elif k in ("minus", "kp_subtract"):
+            self.press("speed-")
+        elif k == "p":
+            self.press("profile")
+        elif k == "c":
+            self.toggle_camera()
+
+    def on_key_release(self, event):
+        k = self.kb_name(event)
+        if k in self.kb_down:
+            # held keys auto-repeat as release+press pairs: only count a release that isn't followed
+            # by a press within 60 ms
+            old = self.kb_jobs.pop(k, None)
+            if old:
+                self.root.after_cancel(old)
+            self.kb_jobs[k] = self.root.after(60, lambda: (self.kb_down.discard(k), self.kb_jobs.pop(k, None)))
+
+    def kb_release_all(self):
+        for job in self.kb_jobs.values():
+            self.root.after_cancel(job)
+        self.kb_jobs.clear()
+        self.kb_down.clear()
+
+    def send_keys(self):
+        """Keyboard drive: tell rov.py which keys are held, 20x a second (this is also its heartbeat)."""
+        if self.kb_on:
+            try:
+                with open(KEYS + ".tmp", "w") as f:
+                    json.dump({"ts": time.time(), "keys": sorted(self.kb_down)}, f)
+                os.replace(KEYS + ".tmp", KEYS)
+            except OSError:
+                pass
+        else:
+            self.kb_release_all()
+        self.root.after(50, self.send_keys)
 
     def setup_tabs(self, c, active):
         self.small_button(c, 12, 12, 140, 54, "◀  BACK", self.show_main, tag=f"back_{active}")
         for x0, x1, name, label, action in ((156, 300, "motors", "MOTORS", self.show_setup),
-                                            (310, 454, "profiles", "PROFILES", self.show_profiles)):
+                                            (310, 454, "profiles", "PROFILES", self.show_profiles),
+                                            (464, 608, "extras", "EXTRAS", self.show_extras)):
             self.small_button(c, x0, 12, x1, 54, label, action, color=BLUE if name == active else BG,
                               tag=f"tab_{name}_{active}")
 
@@ -408,7 +510,8 @@ class Dashboard:
         if page == "profiles" and not self.ed_dirty:
             self.ed_load()
         self.root.focus_set()
-        for name, canvas in (("main", self.c), ("setup", self.c2), ("camera", self.c3), ("profiles", self.c4)):
+        for name, canvas in (("main", self.c), ("setup", self.c2), ("camera", self.c3), ("profiles", self.c4),
+                             ("extras", self.c5)):
             if name == page:
                 canvas.pack(expand=True)
             else:
@@ -417,7 +520,7 @@ class Dashboard:
         if page == "camera":
             vx0, vy0, vx1, vy1 = self.c3.coords(self.video_box)
             w, h = int(vx1 - vx0) // 2 * 2, int(vy1 - vy0) // 2 * 2
-            self.cam.start(w, h, self.cam_flip)
+            self.cam.start(w, h, self.cam_flip, self.cam_adj)
 
     def show_setup(self):
         self.show_page("setup")
@@ -427,6 +530,70 @@ class Dashboard:
 
     def show_profiles(self):
         self.show_page("profiles")
+
+    def show_extras(self):
+        self.show_page("extras")
+
+    # ------------------------------------------------------------ extras page (keyboard drive, arm sound)
+    def toggle(self, c, x0, y0, tag, action):
+        rect = c.create_rectangle(x0, y0, x0 + 150, y0 + 46, fill=BG, outline=DIM, width=2, tags=tag)
+        txt = c.create_text(x0 + 75, y0 + 23, text="", font=fnt(15, "bold"), fill=FG, tags=tag)
+        c.tag_bind(tag, "<Button-1>", lambda e: action())
+        return rect, txt
+
+    def build_extras(self):
+        c = self.c5 = tk.Canvas(self.root, width=CW, height=CH, bg=BG, highlightthickness=0)
+        c.create_rectangle(0, 0, W, 66, fill=PANEL, width=0)
+        self.setup_tabs(c, "extras")
+        self.ex_state = c.create_text(785, 33, anchor="e", text="", font=fnt(14, "bold"), fill=FG)
+
+        c.create_rectangle(20, 80, 780, 232, fill=PANEL, width=0)
+        c.create_text(36, 104, anchor="w", text="KEYBOARD DRIVE", font=fnt(15, "bold"), fill=FG)
+        c.create_text(36, 128, anchor="w", font=fnt(10), fill=DIM,
+                      text="Drive with a keyboard plugged into the Pi. Works with or without the controller.")
+        for i, (keys, what) in enumerate((("W / S", "forward/back"), ("A / D", "turn left/right"),
+                                          ("Space / Shift", "up/down"), ("R / F", "tilt nose up/down"),
+                                          ("Enter", "ARM"), ("Esc", "STOP"))):
+            x, y = 36 + (i // 2) * 250, 162 + (i % 2) * 30
+            c.create_text(x, y, anchor="w", text=keys, font=fnt(11, "bold"),
+                          fill=RED if keys == "Esc" else GREEN if keys == "Enter" else FG)
+            c.create_text(x + 112, y, anchor="w", text=what, font=fnt(10), fill=DIM)
+        self.kb_toggle = self.toggle(c, 614, 90, "ex_kb", lambda: send(f"keyboard:{0 if self.kb_on else 1}"))
+
+        c.create_rectangle(20, 244, 780, 392, fill=PANEL, width=0)
+        c.create_text(36, 268, anchor="w", text="ARM SOUND", font=fnt(15, "bold"), fill=FG)
+        c.create_text(36, 292, anchor="w", font=fnt(10), fill=DIM,
+                      text="Motors play a short tune when armed (no speaker). Props may twitch.")
+        c.create_text(36, 344, anchor="w", text="VOLUME", font=fnt(11, "bold"), fill=FG)
+        self.small_button(c, 124, 324, 170, 364, "−", lambda: self.ex_volume(-1), tag="ex_vdn")
+        self.ex_vol = c.create_text(210, 344, text="", font=fnt(15, "bold"), fill=FG)
+        self.small_button(c, 250, 324, 296, 364, "+", lambda: self.ex_volume(1), tag="ex_vup")
+        c.create_text(312, 344, anchor="w", text="1 = quietest, 15 = loudest", font=fnt(10), fill=DIM)
+        self.small_button(c, 614, 318, 764, 370, "▶ TEST", lambda: send("sound_test"), tag="ex_test")
+        self.snd_toggle = self.toggle(c, 614, 254, "ex_snd", lambda: send(f"sound:{0 if self.snd_on else 1}"))
+
+        c.create_rectangle(20, 402, 780, 446, fill=PANEL, width=0)
+        self.ex_msg = c.create_text(34, 424, anchor="w", text="", font=fnt(13), fill=FG)
+        c.create_rectangle(1, 1, W - 1, H - 1, outline=DIM, width=1)
+        c.scale("all", 0, 0, SX, SY)
+        c.move("all", OX, OY)
+        self.snd_on, self.snd_vol = True, 5
+
+    def ex_volume(self, d):
+        send(f"volume:{max(1, min(15, self.snd_vol + d))}")
+
+    def update_extras(self, st):
+        c = self.c5
+        if st is None:
+            c.itemconfig(self.ex_state, text="OFFLINE", fill=AMBER)
+            return
+        c.itemconfig(self.ex_state, text="ARMED" if st["armed"] else "SAFE", fill=GREEN if st["armed"] else RED)
+        self.snd_on, self.snd_vol = st.get("arm_sound", True), st.get("sound_volume", 5)
+        for (rect, txt), on in ((self.kb_toggle, self.kb_on), (self.snd_toggle, self.snd_on)):
+            c.itemconfig(rect, fill=GREEN if on else BG)
+            c.itemconfig(txt, text="ON" if on else "OFF")
+        c.itemconfig(self.ex_vol, text=str(self.snd_vol))
+        c.itemconfig(self.ex_msg, text=short(st.get("msg", "")))
 
     # ------------------------------------------------------------ profile editor page (mouse/keyboard only)
     def build_profiles(self):
@@ -678,14 +845,16 @@ class Dashboard:
             bar = c.create_rectangle(706, y + 20, 706, y + 34, fill=GREEN, width=0)
             c.create_line(706, y + 17, 706, y + 37, fill=DIM)
             self.cbars.append((name, bar))
-        self.small_button(c, 620, 300, 702, 344, "◀ BACK", self.show_main, tag="cam_back")
-        self.small_button(c, 710, 300, 792, 344, "FLIP ↻", self.flip_camera, tag="cam_flip")
+        self.small_button(c, 620, 294, 702, 334, "◀ BACK", self.show_main, tag="cam_back")
+        self.small_button(c, 710, 294, 792, 334, "FLIP ↻", self.flip_camera, tag="cam_flip")
+        self.small_button(c, 620, 340, 792, 378, "PICTURE", self.toggle_picture, tag="cam_pic")
         self.flip_label = c.create_text(10, 14, anchor="w", text="", font=fnt(11, "bold"), fill=AMBER)
-        c.create_rectangle(620, 356, 792, 470, fill=RED, outline=TRACK, width=2, tags="cam_stop")
-        c.create_text(706, 404, text="STOP", font=fnt(24, "bold"), fill="white", tags="cam_stop")
-        c.create_text(706, 448, text="(Space)", font=fnt(10), fill="#f0f0f0", tags="cam_stop")
+        c.create_rectangle(620, 386, 792, 470, fill=RED, outline=TRACK, width=2, tags="cam_stop")
+        c.create_text(706, 420, text="STOP", font=fnt(24, "bold"), fill="white", tags="cam_stop")
+        c.create_text(706, 454, text="(Esc)", font=fnt(10), fill="#f0f0f0", tags="cam_stop")
         c.tag_bind("cam_stop", "<Button-1>", lambda e: send("stop"))
         self.cmsg = c.create_text(8, 465, anchor="w", text="", font=fnt(11), fill=FG)
+        self.build_picture_panel(c)
         c.scale("all", 0, 0, SX, SY)
         c.move("all", OX, OY)
         vx0, vy0, _, _ = c.coords(self.video_box)
@@ -693,13 +862,68 @@ class Dashboard:
         self.video_item = c.create_image(vx0, vy0, anchor="nw", image=self.video_img)
         c.tag_raise(self.no_signal)
         c.tag_raise(self.flip_label)
+        c.tag_raise("pic")
+        c.itemconfig("pic", state="hidden")
         c.itemconfig(self.flip_label, text=FLIP_TEXT[self.cam_flip])
         self.shown_frame = 0
+
+    # picture adjustments panel (over the left of the video)
+    def build_picture_panel(self, c):
+        c.create_rectangle(6, 30, 306, 314, fill=PANEL, outline=DIM, width=2, tags="pic")
+        self.pic_vals = {}
+        for i, (k, label, *_rest) in enumerate(PICTURE):
+            y = 40 + i * 44
+            c.create_text(16, y + 18, anchor="w", text=label, font=fnt(11, "bold"), fill=FG, tags="pic")
+            for x0, sym, d in ((150, "−", -1), (258, "+", 1)):
+                t = f"pic_{k}_{'up' if d > 0 else 'dn'}"
+                c.create_rectangle(x0, y, x0 + 40, y + 36, fill=BG, outline=DIM, width=2, tags=("pic", t))
+                c.create_text(x0 + 20, y + 18, text=sym, font=fnt(15, "bold"), fill=FG, tags=("pic", t))
+                c.tag_bind(t, "<Button-1>", lambda e, k=k, d=d: self.adjust_picture(k, d))
+            self.pic_vals[k] = c.create_text(224, y + 18, text="", font=fnt(12, "bold"), fill=FG, tags="pic")
+        for x0, x1, t, label, fn in ((14, 152, "pic_reset", "RESET", self.reset_picture),
+                                     (160, 298, "pic_close", "CLOSE", self.toggle_picture)):
+            c.create_rectangle(x0, 266, x1, 304, fill=BG, outline=DIM, width=2, tags=("pic", t))
+            c.create_text((x0 + x1) / 2, 285, text=label, font=fnt(12, "bold"), fill=FG, tags=("pic", t))
+            c.tag_bind(t, "<Button-1>", lambda e, fn=fn: fn())
+        self.pic_open = False
+        self.show_picture_values(c)
+
+    def show_picture_values(self, c=None):
+        c = c or self.c3
+        for k, _, _, _, _, d, fmt in PICTURE:
+            v = self.cam_adj[k]
+            c.itemconfig(self.pic_vals[k], text=fmt(v), fill=FG if abs(v - d) < 1e-6 else AMBER)
+
+    def toggle_picture(self):
+        self.pic_open = not self.pic_open
+        self.c3.itemconfig("pic", state="normal" if self.pic_open else "hidden")
+
+    def adjust_picture(self, k, d):
+        _, _, lo, hi, step, _, _ = next(p for p in PICTURE if p[0] == k)
+        self.cam_adj[k] = round(max(lo, min(hi, self.cam_adj[k] + d * step)), 3)
+        self.picture_changed()
+
+    def reset_picture(self):
+        self.cam_adj = dict(PICTURE_DEFAULT)
+        self.picture_changed()
+
+    def picture_changed(self):
+        save_camera_settings(self.cam_flip, self.cam_adj)
+        self.show_picture_values()
+        # restart the video once the clicking stops (restarting takes ~1 s)
+        if self.adj_job:
+            self.root.after_cancel(self.adj_job)
+        self.adj_job = self.root.after(400, self.restart_video)
+
+    def restart_video(self):
+        self.adj_job = None
+        if self.page == "camera":
+            self.show_page("camera")
 
     def flip_camera(self):
         """FLIP button: normal -> upside down -> mirrored -> normal. Saved in camera.json."""
         self.cam_flip = FLIP_ORDER[(FLIP_ORDER.index(self.cam_flip) + 1) % len(FLIP_ORDER)]
-        save_camera_flip(self.cam_flip)
+        save_camera_settings(self.cam_flip, self.cam_adj)
         self.c3.itemconfig(self.flip_label, text=FLIP_TEXT[self.cam_flip])
         if self.page == "camera":
             self.show_page("camera")   # restart the video with the new setting
@@ -775,6 +999,8 @@ class Dashboard:
     def update(self):
         c = self.c
         st = read_status()
+        self.kb_on = bool(st and st.get("keyboard_drive"))
+        self.update_extras(st)
         self.update_setup(st)
         self.update_camera(st)
         self.update_profiles_page(st)
@@ -803,6 +1029,9 @@ class Dashboard:
                 c.itemconfig(self.pad_txt, text=pad_name(st["controller"]))
                 c.itemconfig(self.pad_sub, text="connected · link OK" if st["heartbeat"]
                              else "connected · no link monitor")
+            elif self.kb_on:
+                c.itemconfig(self.pad_txt, text="Keyboard")
+                c.itemconfig(self.pad_sub, text="Enter = arm · Esc = stop")
             else:
                 c.itemconfig(self.pad_txt, text="No controller")
                 c.itemconfig(self.pad_sub, text="press PS · CREATE+PS pairs")
@@ -826,9 +1055,16 @@ class Dashboard:
                 pass
             elif not armed and st["controller"] and not st.get("switch_on", True):
                 msg = "Panel ARM switch is OFF"
+            elif (not armed and self.kb_on and "STOP" not in msg and "Let go" not in msg
+                  and "Centre" not in msg and "Panel" not in msg):
+                msg = ("Press OPTIONS or Enter to arm" if st["controller"] else "Press Enter to arm") + \
+                      "  ·  WASD drive, Space/Shift up/down"
             elif not armed and st["controller"] and "STOP" not in msg and "Centre" not in msg:
                 msg = "Press OPTIONS on the controller to arm"
             c.itemconfig(self.msg, text=short(msg))
+            keys = st.get("keys") or []
+            c.itemconfig(self.kb_badge, text=("KEYS: " + " ".join(k.upper() for k in keys)) if keys
+                         else "KEYBOARD DRIVE ON" if self.kb_on else "")
 
             motors = st["motors"]
             for i, (name, pct, bar) in enumerate(self.rows):

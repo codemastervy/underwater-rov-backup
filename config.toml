@@ -29,6 +29,9 @@ invert_yaw = false
 invert_heave = false
 invert_sway = false
 invert_pitch = false
+keyboard_drive = false   # drive with a keyboard (WASD) - switch on the screen: SETUP > EXTRAS
+arm_sound = true         # motors play a short tune when armed (SETUP > EXTRAS)
+sound_volume = 5         # 1-15: PWM duty % used for the tune
 
 [controllers]
 preferred = ["DualSense", "Wireless Controller", "Xbox", "8BitDo", "Pro Controller"]
