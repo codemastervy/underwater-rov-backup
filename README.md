@@ -75,8 +75,9 @@ motors disarm).
 whistle). On/off, volume and TEST are in SETUP › EXTRAS. **This needs the updated firmware: run the setup command again with the Mega plugged in.**
 
 **Autopilot** (SETUP › AUTOPILOT, mouse only, OFF at every start-up): trim, CRUISE, LINE following, colour TARGET
-following, camera HEADING hold and timed MISSIONs. If it gets unsure it hovers and flashes **TAKE CONTROL NOW**,
-then switches off after 3 s. STOP always ends it. Same as the Pi version: see the Pi repo's README for details.
+following (pick the colour by clicking the object: camera page › PICK), camera HEADING hold and timed MISSIONs.
+Any stick/key movement or STOP takes over. Green status bar = working; flashing red **TAKE CONTROL NOW** = unsure
+(it hovers, then switches off after 3 s). Same as the Pi version: see the Pi repo's README for details.
 
 **Camera picture:** CAMERA › PICTURE adjusts gain (ISO), brightness, contrast, colour and warmth (saved).
 

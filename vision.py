@@ -24,8 +24,9 @@ def to_array(ppm, step=4):
     return img[::step, ::step].astype(np.float32) / 255.0
 
 
-def colour_mask(img, colour):
-    """True where the picture has `colour` ('dark', 'white' or a name in HUES)."""
+def colour_mask(img, colour, pick=None):
+    """True where the picture has `colour` ('dark', 'white', a name in HUES, or 'picked' = the
+    [hue, saturation, brightness] clicked on the camera page)."""
     mx = img.max(axis=2)
     mn = img.min(axis=2)
     d = mx - mn
@@ -37,6 +38,14 @@ def colour_mask(img, colour):
     r, g, b = img[..., 0], img[..., 1], img[..., 2]
     dd = np.maximum(d, 1e-6)
     hue = np.where(mx == r, ((g - b) / dd) % 6, np.where(mx == g, (b - r) / dd + 2, (r - g) / dd + 4)) * 60
+    if colour == "picked":
+        if not pick:
+            return np.zeros(mx.shape, bool)
+        ph, ps, pv = pick
+        if ps < 0.25:      # greyish object: match brightness, little colour
+            return (sat < 0.3) & (np.abs(mx - pv) < 0.12)
+        dh = np.abs((hue - ph + 180) % 360 - 180)
+        return (dh < 20) & (sat > max(0.15, ps * 0.5)) & (np.abs(mx - pv) < 0.35) & (mx > 0.08)
     m = np.zeros(mx.shape, bool)
     for lo, hi in HUES.get(colour, []):
         m |= (hue >= lo) & (hue < hi)
@@ -64,9 +73,9 @@ def find_line(img, colour="dark"):
             "points": [(x / w, y / h) for y, x in pts]}
 
 
-def find_target(img, colour="orange"):
+def find_target(img, colour="orange", pick=None):
     """Biggest patch of `colour`: its centre (x, y) and how much of the picture it fills (area 0..1)."""
-    m = colour_mask(img, colour)
+    m = colour_mask(img, colour, pick)
     h, w = m.shape
     if m.sum() < 0.003 * m.size:
         return {"found": False}

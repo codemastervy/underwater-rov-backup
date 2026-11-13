@@ -10,6 +10,7 @@ keeps running normally (keyboard driving stops).
 Keys: Esc = STOP, Space = STOP (keyboard drive off), +/- = speed, P = profile, C = camera, F11 = full screen.
 Keyboard drive on: W/S forward/back, A/D turn, Space up, Shift down, R/F tilt, Enter = ARM.
 """
+import colorsys
 import glob
 import json
 import os
@@ -318,7 +319,7 @@ class Dashboard:
         self.adj_job = None
         self.cam_retry_at = 0.0
         # autopilot state (from rov.py status)
-        self.ap_enabled, self.ap_mode, self.ap_epoch, self.ap_alert = False, None, 0, ""
+        self.ap_enabled, self.ap_mode, self.ap_epoch, self.ap_alert, self.ap_info_text = False, None, 0, "", ""
         self.ap_settings, self.ap_local_until = {}, 0.0
         self.vision_result, self.vision_error = {}, ""
 
@@ -853,7 +854,7 @@ class Dashboard:
         self.show_page("mission")
 
     AP_MODE_BUTTONS = [("cruise", "CRUISE", "hold thrust"), ("line", "LINE", "follow a line"),
-                       ("target", "TARGET", "follow a colour"), ("heading", "HEADING", "hold direction"),
+                       ("target", "TARGET", "follow a colour"), ("heading", "HEADING", "hold still, facing"),
                        ("mission", "MISSION", "run the steps")]
     AP_ROWS = [  # (key, label, kind, column, row)
         ("heave_trim", "HOVER TRIM", "num", 0, 0), ("pitch_trim", "NOSE TRIM", "num", 0, 1),
@@ -882,7 +883,7 @@ class Dashboard:
         c.create_rectangle(20, 74, 780, 124, fill=PANEL, width=0)
         c.create_text(36, 92, anchor="w", text="AUTOPILOT", font=fnt(15, "bold"), fill=FG)
         c.create_text(36, 112, anchor="w", font=fnt(9), fill=DIM,
-                      text="Off at every start-up. Mouse only. STOP / CIRCLE always stops it.")
+                      text="Off at every start-up. Mouse only. Any stick/key movement or STOP takes over.")
         self.ap_master = self.toggle(c, 614, 76, "ap_master", lambda: send(f"ap_enable:{0 if self.ap_enabled else 1}"))
 
         self.ap_mode_btns = {}
@@ -895,7 +896,7 @@ class Dashboard:
             self.ap_mode_btns[m] = rect
 
         self.ap_info_rect = c.create_rectangle(20, 190, 616, 232, fill=PANEL, width=0)
-        self.ap_info = c.create_text(30, 211, anchor="w", text="", font=fnt(11), fill=FG)
+        self.ap_info = c.create_text(30, 211, anchor="w", text="", font=fnt(11, "bold"), fill=FG)
         c.create_rectangle(628, 190, 780, 232, fill=RED, outline="", tags="ap_off")
         c.create_text(704, 211, text="AUTO OFF", font=fnt(13, "bold"), fill="white", tags="ap_off")
         c.tag_bind("ap_off", "<Button-1>", lambda e: send("ap_off"))
@@ -950,9 +951,17 @@ class Dashboard:
             c.itemconfig(r, fill=GREEN if self.ap_mode == m else BG if self.ap_enabled else PANEL)
         for key, item in self.ap_vals.items():
             if key in self.ap_settings:
-                c.itemconfig(item, text=self.ap_format(key, self.ap_settings[key]))
+                c.itemconfig(item, text=self.ap_format(key, self.ap_settings[key]), fill=FG)
+        pick = self.ap_settings.get("target_pick")
+        if self.ap_settings.get("target_colour") == "picked":
+            if pick:
+                rgb = colorsys.hsv_to_rgb(pick[0] / 360, pick[1], max(0.35, pick[2]))
+                c.itemconfig(self.ap_vals["target_colour"], text="■ PICKED",
+                             fill="#%02x%02x%02x" % tuple(int(v * 255) for v in rgb))
+            else:
+                c.itemconfig(self.ap_vals["target_colour"], text="PICK ON CAMERA", fill=AMBER)
         if self.ap_alert:
-            info, color = "⚠ " + self.ap_alert, RED
+            info, color = "⚠ " + self.ap_alert, "white"
         elif self.ap_mode:
             info, color = f"{self.ap_mode.upper()}: {ap.get('info', '')}", GREEN
         elif self.ap_enabled:
@@ -964,21 +973,28 @@ class Dashboard:
             c.itemconfig(self.ap_msg, text=self.vision_error or st.get("msg", ""))
 
     def update_alerts(self):
-        """Big flashing TAKE CONTROL banner on the main and camera pages while the autopilot is unsure."""
-        a = self.ap_alert
+        """Bottom status bar on the main and camera pages, only while the autopilot is switched ON:
+        green = a mode is engaged and working; flashing red = unsure, TAKE CONTROL NOW."""
+        a = self.ap_alert if self.ap_enabled else ""
+        good = bool(self.ap_enabled and self.ap_mode and not a)
         flash = int(time.monotonic() * 3) % 2 == 0
         if a:
-            self.c.itemconfig(self.msg_rect, fill=RED if flash else "#7a1512")
-            self.c.itemconfig(self.msg, text=short("⚠ " + a, 60), fill="white", font=fnt(13, "bold"))
+            fill, text = (RED if flash else "#7a1512"), "⚠ " + a
+        elif good:
+            fill, text = GREEN, f"✓ AUTOPILOT {self.ap_mode.upper()}: {self.ap_info_text}"
+        else:
+            fill, text = None, ""
+        if fill:
+            self.c.itemconfig(self.msg_rect, fill=fill)
+            self.c.itemconfig(self.msg, text=short(text, 60), fill="white", font=fnt(13, "bold"))
         else:
             self.c.itemconfig(self.msg_rect, fill=PANEL)
             self.c.itemconfig(self.msg, font=fnt(13))
-        self.c3.itemconfig(self.cam_alert_rect, state="normal" if a else "hidden",
-                           fill=RED if flash else "#7a1512")
-        self.c3.itemconfig(self.cam_alert, state="normal" if a else "hidden", text=short("⚠ " + a, 52))
+        self.c3.itemconfig(self.cam_alert_rect, state="normal" if fill else "hidden", fill=fill or RED)
+        self.c3.itemconfig(self.cam_alert, state="normal" if fill else "hidden", text=short(text, 52))
         self.c3.tag_raise(self.cam_alert_rect)
         self.c3.tag_raise(self.cam_alert)
-        self.c6.itemconfig(self.ap_info_rect, fill=(RED if flash else "#7a1512") if a else PANEL)
+        self.c6.itemconfig(self.ap_info_rect, fill=fill if a else PANEL)
 
     # ------------------------------------------------------------ vision (runs in a thread)
     def vision_loop(self):
@@ -1006,7 +1022,7 @@ class Dashboard:
                     if mode == "line":
                         res = V.find_line(img, s.get("line_colour", "dark"))
                     elif mode == "target":
-                        res = V.find_target(img, s.get("target_colour", "orange"))
+                        res = V.find_target(img, s.get("target_colour", "orange"), s.get("target_pick"))
                     else:
                         res = tracker.update(img, self.ap_epoch)
                 except Exception as ex:
@@ -1153,7 +1169,9 @@ class Dashboard:
             self.cbars.append((name, bar))
         self.small_button(c, 620, 294, 702, 334, "◀ BACK", self.show_main, tag="cam_back")
         self.small_button(c, 710, 294, 792, 334, "FLIP ↻", self.flip_camera, tag="cam_flip")
-        self.small_button(c, 620, 340, 792, 378, "PICTURE", self.toggle_picture, tag="cam_pic")
+        self.small_button(c, 620, 340, 702, 378, "PICTURE", self.toggle_picture, tag="cam_pic")
+        self.pick_btn = self.small_button(c, 710, 340, 792, 378, "PICK", self.toggle_pick, tag="cam_pick")
+        c.bind("<Button-1>", self.cam_click, add="+")
         self.flip_label = c.create_text(10, 14, anchor="w", text="", font=fnt(11, "bold"), fill=AMBER)
         c.create_rectangle(620, 386, 792, 470, fill=RED, outline=TRACK, width=2, tags="cam_stop")
         c.create_text(706, 420, text="STOP", font=fnt(24, "bold"), fill="white", tags="cam_stop")
@@ -1161,6 +1179,7 @@ class Dashboard:
         c.tag_bind("cam_stop", "<Button-1>", lambda e: send("stop"))
         self.cmsg = c.create_text(8, 465, anchor="w", text="", font=fnt(11), fill=FG)
         self.build_picture_panel(c)
+        self.picking = False
         c.scale("all", 0, 0, SX, SY)
         c.move("all", OX, OY)
         vx0, vy0, _, _ = c.coords(self.video_box)
@@ -1174,6 +1193,7 @@ class Dashboard:
                                      fill=GREEN)
         self.cam_alert_rect = c.create_rectangle(X(0), Y(410), X(600), Y(450), fill=RED, width=0, state="hidden")
         self.cam_alert = c.create_text(X(300), Y(430), text="", font=fnt(14, "bold"), fill="white", state="hidden")
+        self.pick_msg = c.create_text(X(300), Y(390), text="", font=fnt(15, "bold"), fill=AMBER)
         c.tag_raise(self.no_signal)
         c.tag_raise(self.flip_label)
         c.tag_raise("pic")
@@ -1208,7 +1228,51 @@ class Dashboard:
             v = self.cam_adj[k]
             c.itemconfig(self.pic_vals[k], text=fmt(v), fill=FG if abs(v - d) < 1e-6 else AMBER)
 
+    # click an object on the video to make its colour the autopilot TARGET colour
+    def toggle_pick(self):
+        self.picking = not self.picking
+        if self.picking and self.pic_open:
+            self.toggle_picture()
+        self.c3.itemconfig(self.c3.find_withtag(self.pick_btn)[0], fill=AMBER if self.picking else BG)
+        self.c3.itemconfig(self.pick_msg, text="CLICK THE OBJECT TO USE ITS COLOUR" if self.picking else "")
+
+    def cam_click(self, event):
+        if not self.picking:
+            return
+        vx0, vy0, vx1, vy1 = self.c3.coords(self.video_box)
+        if not (vx0 <= event.x < vx1 and vy0 <= event.y < vy1):
+            return
+        frame = self.cam.frame
+        if not frame:
+            self.c3.itemconfig(self.pick_msg, text="NO CAMERA PICTURE TO PICK FROM")
+            return
+        _, size, _, data = frame.split(b"\n", 3)
+        w, h = (int(v) for v in size.split())
+        px, py = int(event.x - vx0), int(event.y - vy0)
+        tot, n = [0, 0, 0], 0
+        for y in range(max(0, py - 3), min(h, py + 4)):           # average a 7x7 patch
+            for x in range(max(0, px - 3), min(w, px + 4)):
+                i = (y * w + x) * 3
+                for k in range(3):
+                    tot[k] += data[i + k]
+                n += 1
+        if not n:
+            return
+        r, g, b = (t / n / 255 for t in tot)
+        hh, ss, vv = colorsys.rgb_to_hsv(r, g, b)
+        pick = [round(hh * 360), round(ss, 2), round(vv, 2)]
+        send(f"ap_set:target_pick:{pick[0]},{pick[1]},{pick[2]}")
+        self.ap_settings.update(target_pick=pick, target_colour="picked")
+        self.ap_local_until = time.monotonic() + 1.5
+        self.picking = False
+        self.c3.itemconfig(self.c3.find_withtag(self.pick_btn)[0], fill=BG)
+        rgb = "#%02x%02x%02x" % tuple(int(t / n) for t in tot)
+        self.c3.itemconfig(self.pick_msg, text="■ TARGET COLOUR PICKED", fill=rgb if pick[2] > 0.3 else AMBER)
+        self.root.after(4000, lambda: self.picking or self.c3.itemconfig(self.pick_msg, text="", fill=AMBER))
+
     def toggle_picture(self):
+        if not self.pic_open and getattr(self, "picking", False):
+            self.toggle_pick()
         self.pic_open = not self.pic_open
         self.c3.itemconfig("pic", state="normal" if self.pic_open else "hidden")
 
@@ -1281,7 +1345,7 @@ class Dashboard:
             word = {"line": "LINE", "target": "TARGET", "heading": "HEADING HOLD", "cruise": "CRUISE",
                     "mission": "MISSION"}[self.ap_mode]
             ok = found or self.ap_mode not in core.VISION_MODES
-            c.itemconfig(self.ov_text, text=f"AUTO {word}" + ("" if ok else "  - NOT SURE"),
+            c.itemconfig(self.ov_text, text=f"AUTO {word}" + ("" if ok else "  - NOT SURE") if self.ap_enabled else "",
                          fill=GREEN if ok else RED)
         else:
             c.itemconfig(self.ov_text, text="")
@@ -1346,7 +1410,8 @@ class Dashboard:
         self.kb_on = bool(st and st.get("keyboard_drive"))
         ap = (st or {}).get("autopilot") or {}
         self.ap_enabled, self.ap_mode = bool(ap.get("enabled")), ap.get("mode")
-        self.ap_epoch, self.ap_alert = ap.get("epoch", 0), ap.get("alert", "")
+        self.ap_epoch, self.ap_alert = ap.get("epoch", 0), ap.get("alert", "") if ap.get("enabled") else ""
+        self.ap_info_text = ap.get("info", "")
         if time.monotonic() > self.ap_local_until and ap.get("settings"):
             self.ap_settings = dict(ap["settings"])
         self.camera_policy()
