@@ -42,7 +42,7 @@ cp -a "$SRC/." "$DIR/"
 chmod +x "$DIR"/*.sh
 
 echo "==> Installing packages and permissions (asks for your password)"
-bash "$DIR/install.sh"
+ROV_FROM_SETUP=1 bash "$DIR/install.sh"
 
 # Firmware: upload when a Mega is plugged in and the sketch is new/changed
 PORT="$(ls /dev/ttyACM* /dev/ttyUSB* 2>/dev/null | head -1 || true)"

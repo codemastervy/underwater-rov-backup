@@ -28,6 +28,7 @@ Terminal=false
 Categories=Utility;
 EOF
 
+[ -n "${ROV_FROM_SETUP:-}" ] && exit 0   # setup.sh prints its own summary
 cat <<EOF
 
 Done. LOG OUT AND BACK IN (or reboot) so the new permissions apply. Then:
