@@ -57,9 +57,13 @@ def download(sha, into):
         shutil.copyfileobj(r, f)
     with tarfile.open(path) as t:
         for m in t.getmembers():
-            if m.name.startswith("/") or ".." in m.name.split("/") or m.issym() or m.islnk():
+            if (m.name.startswith("/") or ".." in m.name.split("/")
+                    or not (m.isfile() or m.isdir())):     # no links, devices or pipes
                 raise ValueError(f"unsafe file in download: {m.name}")
-        t.extractall(into)
+        try:
+            t.extractall(into, filter="data")    # Python 3.12+ (and patched 3.11): strict extraction
+        except TypeError:
+            t.extractall(into)
     dirs = [d for d in os.listdir(into) if os.path.isdir(os.path.join(into, d))]
     if len(dirs) != 1 or not os.path.isfile(os.path.join(into, dirs[0], "rov.py")):
         raise ValueError("download doesn't look like the ROV program")
