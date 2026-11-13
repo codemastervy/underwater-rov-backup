@@ -76,7 +76,7 @@ Open **ROV Backup** from the app menu (or `bash run.sh`). The controls are the s
 **Enter = ARM**, **Esc = STOP**. If the window closes or freezes, the keys count as released (and with no controller the
 motors disarm).
 
-**Arm sound:** when armed, the motors play **the first 15 s of "Can't Stop" (Red Hot Chili Peppers) in beeps** (no
+**Arm sound:** when armed, the motors play **an FPV-drone style arming sound (5 s)** (no
 speaker: a tiny audio-frequency PWM makes the motors whistle). **Touch any control and it stops at once** so you can
 drive. **SET TUNE** takes any RTTTL ringtone text (saved in `tune.txt`); **DEFAULT TUNE** goes back. On/off, volume and
 TEST are in SETUP › EXTRAS. **This needs the updated firmware: run the setup command again with the Mega plugged in.**

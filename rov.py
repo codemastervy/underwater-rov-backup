@@ -26,7 +26,7 @@ Autopilot (SETUP > AUTOPILOT, mouse only, off at every start-up): trim, cruise c
 colour-target following, camera heading hold, and pre-programmed missions. See class Autopilot.
 
 Arm sound: when armed, the motors play a tune (quiet audio-frequency PWM, like a 3D printer's
-stepper "music"): the first 15 s of "Can't Stop" as beeps, or any RTTTL ringtone you paste in.
+stepper "music"): an FPV-drone style arming sound (5 s), or any RTTTL ringtone you paste in.
 Touching any control stops the tune at once so you can drive. On/off, volume, tune and TEST are
 on SETUP > EXTRAS.
 
@@ -65,13 +65,15 @@ VISION_PATH = "/dev/shm/rov-vision.json"  # camera autopilot results, written by
 
 # Motor "music": (frequency Hz, seconds); 0 Hz = silence.
 TUNES = {"beeps": [(1047, 0.10), (0, 0.03), (1319, 0.10), (0, 0.03), (1568, 0.20)]}
-TUNE_MAX = 15.0          # seconds: longer tunes are cut off here
-# Default arm tune: the first 15 s of "Can't Stop" (Red Hot Chili Peppers) as beeps - the muted 16th-note
-# guitar intro at 89 BPM, worked out from the recording. Any RTTTL ringtone can replace it
-# (SETUP > EXTRAS > SET TUNE, or put the text in tune.txt next to config.toml).
-DEFAULT_TUNE = ("Cant Stop:d=16,o=5,b=89:d,e,e,d,e,e,d,e,e,d,e,e,e,e,e,e,e,e,e,b4,e,e,e,e,e,b4,e,b4,e,e,e,b4,"
-                "e,b4,e,b4,e,b4,e,e,e,e,e,b4,e,b4,e,b4,e,b4,e,b4,e,b4,e,b4,e,b4,e,b4,e,b4,e,b4,e,b4,e,b4,e,e,e,"
-                "e,e,e,e,e,e,e,e,e,e,e,e,e,e,e,e,e,e,e,e")
+TUNE_MAX = 5.0           # seconds: longer tunes are cut off here
+# Default arm sound: FPV-drone style (like a quad's ESCs + flight controller), 5 s:
+TUNES["fpv"] = [
+    (1319, 0.25), (0, 0.05), (1480, 0.25), (0, 0.05), (1661, 0.25),   # ESC power-up: 3 rising tones
+    (0, 1.00),                                                          # waiting for the signal
+    (988, 0.35), (0, 0.10), (1976, 0.55),                               # signal OK: low - HIGH
+    (0, 0.65),
+    (1976, 1.50),                                                       # ARMED: long beep
+]
 NOTE_SEMI = {"c": -9, "d": -7, "e": -5, "f": -4, "g": -2, "a": 0, "b": 2, "h": 2}
 
 
@@ -1175,15 +1177,13 @@ class ROV:
                 text = f.read().strip()
         except OSError:
             pass
-        for src in ((text, "custom"), (DEFAULT_TUNE, "default")) if text else ((DEFAULT_TUNE, "default"),):
+        self.tune_name, notes, self.tune_custom = "FPV arm", TUNES["fpv"], False
+        if text:
             try:
-                self.tune_name, notes = parse_rtttl(src[0])
-                self.tune_custom = src[1] == "custom"
-                break
+                self.tune_name, notes = parse_rtttl(text)
+                self.tune_custom = True
             except ValueError as ex:
                 log.warning(f"tune.txt ignored: {ex}")
-        else:
-            self.tune_name, notes, self.tune_custom = "Beeps", TUNES["beeps"], False
         TUNES["arm"] = notes
         self.tune_secs = sum(d for _, d in notes)
 
