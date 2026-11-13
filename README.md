@@ -9,6 +9,18 @@ same 4 BTS7960 boards.
 PS5 controller --Bluetooth/USB--> Laptop (rov.py + dashboard) --USB--> Arduino Mega --> 4x BTS7960 --> thrusters
 ```
 
+## Screenshots
+
+The dashboard with nothing plugged in (no Arduino, no controller), so everything reads OFFLINE.
+
+| Main page | Profiles |
+|---|---|
+| ![Main page](docs/screenshots/main.png) | ![Profiles page](docs/screenshots/profiles.png) |
+
+| Setup |
+|---|
+| ![Setup page](docs/screenshots/setup.png) |
+
 ## Files
 | File | What it is |
 |---|---|
