@@ -6,14 +6,15 @@
 #
 # - Downloads the latest version from GitHub into ~/underwater-rov-backup (no git needed).
 # - Installs everything it needs (Python libraries, Bluetooth, ffmpeg, arduino-cli) and the app-menu entry.
-# - Updating keeps your settings: config.toml (motor flips), profiles.json, camera.json.
+# - Updating keeps your settings: config.toml (motor flips), profiles, camera, autopilot, arm tune.
+# - After this, the app updates itself: SETUP > EXTRAS > UPDATE NOW when it says UPDATE READY.
 # - If the Arduino Mega is plugged in, it uploads the firmware (only when it's new or changed).
 set -euo pipefail
 
 REPO="codemastervy/underwater-rov-backup"
 BRANCH="${ROV_BRANCH:-main}"
 DIR="$HOME/underwater-rov-backup"
-KEEP=(config.toml profiles.json camera.json)
+KEEP=(config.toml profiles.json camera.json autopilot.json mission.json tune.txt)
 
 if [ "$(id -u)" -eq 0 ]; then
   echo "Run this as your normal user (not with sudo). It asks for your password when it needs it."
@@ -32,8 +33,11 @@ fi
 echo "==> Downloading the latest version from GitHub"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-curl -fsSL "https://github.com/$REPO/archive/refs/heads/$BRANCH.tar.gz" | tar -xz -C "$TMP"
+SHA="$(curl -fsSL -H "Accept: application/vnd.github.sha" "https://api.github.com/repos/$REPO/commits/$BRANCH" || true)"
+if [ ${#SHA} -ne 40 ]; then SHA="$BRANCH"; fi
+curl -fsSL "https://codeload.github.com/$REPO/tar.gz/$SHA" | tar -xz -C "$TMP"
 SRC="$(find "$TMP" -mindepth 1 -maxdepth 1 -type d | head -1)"
+if [ "$SHA" != "$BRANCH" ]; then echo "$SHA" > "$SRC/VERSION"; fi   # lets the app spot newer versions
 mkdir -p "$DIR"
 for f in "${KEEP[@]}"; do                     # your settings win over the downloaded defaults
   if [ -f "$DIR/$f" ]; then rm -f "$SRC/$f"; fi

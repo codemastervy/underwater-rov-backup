@@ -21,6 +21,10 @@ import time
 import tkinter as tk
 
 import rov as core   # profile definitions (INPUTS, ACTIONS, DEFAULT_PROFILES) live in rov.py
+try:
+    import updater       # automatic updates from GitHub (SETUP > EXTRAS)
+except ImportError:
+    updater = None
 
 STATUS = "/dev/shm/rov-status.json"
 CMD = "/dev/shm/rov-cmd"
@@ -322,6 +326,8 @@ class Dashboard:
         self.ap_enabled, self.ap_mode, self.ap_epoch, self.ap_alert, self.ap_info_text = False, None, 0, "", ""
         self.ap_settings, self.ap_local_until = {}, 0.0
         self.vision_result, self.vision_error = {}, ""
+        self.upd = updater.Updater() if updater else None
+        self.armed = False
 
         c = self.c = tk.Canvas(root, width=CW, height=CH, bg=BG, highlightthickness=0)
         c.pack(expand=True)
@@ -339,6 +345,8 @@ class Dashboard:
         self.small_button(c, 540, 14, 690, 52, "SETUP", self.show_setup)
         self.kb_badge = c.create_text(470, 62, text="", font=fnt(9, "bold"), fill=AMBER)
         self.ap_badge = c.create_text(615, 62, text="", font=fnt(9, "bold"), fill=GREEN)
+        self.upd_badge = c.create_text(300, 62, text="", font=fnt(9, "bold"), fill=BLUE, tags="upd_badge")
+        c.tag_bind("upd_badge", "<Button-1>", lambda e: self.show_extras())
 
         # --- thrusters
         c.create_text(20, 84, anchor="w", text="THRUSTERS", font=fnt(10, "bold"), fill=DIM)
@@ -423,12 +431,15 @@ class Dashboard:
             return False
 
     def on_key(self, event):
+        k = self.kb_name(event)
+        if k == "escape":          # STOP works always, even while typing in a text box
+            self.press("stop")
+            if self.typing():
+                self.root.focus_set()
+            return
         if self.typing():
             return
-        k = self.kb_name(event)
-        if k == "escape":
-            self.press("stop")
-        elif k == "f11":
+        if k == "f11":
             self.root.attributes("-fullscreen", not self.root.attributes("-fullscreen"))
         elif self.kb_on and k in KB_KEYS:
             job = self.kb_jobs.pop(k, None)
@@ -572,53 +583,149 @@ class Dashboard:
         self.setup_tabs(c, "extras")
         self.ex_state = c.create_text(785, 33, anchor="e", text="", font=fnt(14, "bold"), fill=FG)
 
-        c.create_rectangle(20, 80, 780, 232, fill=PANEL, width=0)
-        c.create_text(36, 104, anchor="w", text="KEYBOARD DRIVE", font=fnt(15, "bold"), fill=FG)
-        c.create_text(36, 128, anchor="w", font=fnt(10), fill=DIM,
-                      text="Drive with a keyboard plugged into the Pi. Works with or without the controller.")
+        c.create_rectangle(20, 74, 780, 184, fill=PANEL, width=0)
+        c.create_text(36, 94, anchor="w", text="KEYBOARD DRIVE", font=fnt(15, "bold"), fill=FG)
+        c.create_text(36, 116, anchor="w", font=fnt(10), fill=DIM,
+                      text="Drive with this laptop's keyboard. Works with or without the controller.")
         for i, (keys, what) in enumerate((("W / S", "forward/back"), ("A / D", "turn left/right"),
                                           ("Space / Shift", "up/down"), ("R / F", "tilt nose up/down"),
                                           ("Enter", "ARM"), ("Esc", "STOP"))):
-            x, y = 36 + (i // 2) * 250, 162 + (i % 2) * 30
+            x, y = 36 + (i // 2) * 250, 144 + (i % 2) * 24
             c.create_text(x, y, anchor="w", text=keys, font=fnt(11, "bold"),
                           fill=RED if keys == "Esc" else GREEN if keys == "Enter" else FG)
             c.create_text(x + 112, y, anchor="w", text=what, font=fnt(10), fill=DIM)
-        self.kb_toggle = self.toggle(c, 614, 90, "ex_kb", lambda: send(f"keyboard:{0 if self.kb_on else 1}"))
+        self.kb_toggle = self.toggle(c, 614, 82, "ex_kb", lambda: send(f"keyboard:{0 if self.kb_on else 1}"))
 
-        c.create_rectangle(20, 244, 780, 392, fill=PANEL, width=0)
-        c.create_text(36, 268, anchor="w", text="ARM SOUND", font=fnt(15, "bold"), fill=FG)
-        c.create_text(36, 292, anchor="w", font=fnt(10), fill=DIM,
-                      text="Motors play a short tune when armed (no speaker). Props may twitch.")
-        c.create_text(36, 344, anchor="w", text="VOLUME", font=fnt(11, "bold"), fill=FG)
-        self.small_button(c, 124, 324, 170, 364, "−", lambda: self.ex_volume(-1), tag="ex_vdn")
-        self.ex_vol = c.create_text(210, 344, text="", font=fnt(15, "bold"), fill=FG)
-        self.small_button(c, 250, 324, 296, 364, "+", lambda: self.ex_volume(1), tag="ex_vup")
-        c.create_text(312, 344, anchor="w", text="1 = quietest, 15 = loudest", font=fnt(10), fill=DIM)
-        self.small_button(c, 614, 318, 764, 370, "▶ TEST", lambda: send("sound_test"), tag="ex_test")
-        self.snd_toggle = self.toggle(c, 614, 254, "ex_snd", lambda: send(f"sound:{0 if self.snd_on else 1}"))
+        c.create_rectangle(20, 192, 780, 318, fill=PANEL, width=0)
+        c.create_text(36, 212, anchor="w", text="ARM SOUND", font=fnt(15, "bold"), fill=FG)
+        self.ex_tune = c.create_text(36, 238, anchor="w", font=fnt(10), fill=DIM, text="")
+        c.create_text(36, 286, anchor="w", text="VOLUME", font=fnt(11, "bold"), fill=FG)
+        self.small_button(c, 108, 266, 150, 306, "−", lambda: self.ex_volume(-1), tag="ex_vdn")
+        self.ex_vol = c.create_text(176, 286, text="", font=fnt(15, "bold"), fill=FG)
+        self.small_button(c, 202, 266, 244, 306, "+", lambda: self.ex_volume(1), tag="ex_vup")
+        self.small_button(c, 262, 266, 412, 306, "SET TUNE", self.tune_edit, tag="ex_tset")
+        self.small_button(c, 422, 266, 592, 306, "DEFAULT TUNE", lambda: send("tune:"), tag="ex_tdef")
+        self.small_button(c, 614, 258, 764, 310, "▶ TEST", self.tune_test, tag="ex_test")
+        self.snd_toggle = self.toggle(c, 614, 200, "ex_snd", lambda: send(f"sound:{0 if self.snd_on else 1}"))
 
-        c.create_rectangle(20, 402, 780, 446, fill=PANEL, width=0)
-        self.ex_msg = c.create_text(34, 424, anchor="w", text="", font=fnt(13), fill=FG)
+        c.create_rectangle(20, 326, 780, 406, fill=PANEL, width=0)
+        c.create_text(36, 348, anchor="w", text="SOFTWARE UPDATE", font=fnt(15, "bold"), fill=FG)
+        self.ex_upd = c.create_text(36, 380, anchor="w", font=fnt(10), fill=DIM, text="")
+        self.small_button(c, 614, 340, 764, 392, "CHECK NOW", self.update_click, tag="ex_upd")
+
+        c.create_rectangle(20, 414, 780, 458, fill=PANEL, width=0)
+        self.ex_msg = c.create_text(34, 436, anchor="w", text="", font=fnt(13), fill=FG)
         c.create_rectangle(1, 1, W - 1, H - 1, outline=DIM, width=1)
         c.scale("all", 0, 0, SX, SY)
         c.move("all", OX, OY)
-        self.snd_on, self.snd_vol = True, 5
+        self.snd_on, self.snd_vol, self.snd_playing = True, 5, False
+        # text box for pasting a ringtone (shown by SET TUNE)
+        self.tune_var = tk.StringVar()
+        self.tune_entry = tk.Entry(self.root, textvariable=self.tune_var, font=fnt(11), bg=BG, fg=FG,
+                                   insertbackground=FG, relief="flat", highlightthickness=1,
+                                   highlightbackground=DIM, highlightcolor=BLUE)
+        self.tune_entry.bind("<Return>", lambda e: self.tune_edit())
+        self.tune_win = c.create_window(X(36), Y(226), anchor="nw", window=self.tune_entry,
+                                        width=int(556 * SX), height=int(26 * SY), state="hidden")
+        self.tune_editing = False
+        self.ex_note, self.ex_note_until = "", 0.0
+
+    def button_text(self, c, tag, text):
+        for item in c.find_withtag(tag):
+            if c.type(item) == "text":
+                c.itemconfig(item, text=text)
+
+    def ex_say(self, text, secs=6):
+        self.ex_note, self.ex_note_until = text, time.monotonic() + secs
+
+    def tune_edit(self):
+        """SET TUNE opens a text box: paste (Ctrl+V) or type an RTTTL ringtone, then SAVE (or Enter)."""
+        c = self.c5
+        if not self.tune_editing:
+            self.tune_editing = True
+            c.itemconfig(self.tune_win, state="normal")
+            c.itemconfig(self.ex_tune, state="hidden")
+            self.button_text(c, "ex_tset", "SAVE")
+            self.tune_entry.focus_set()
+            self.ex_say("Paste an RTTTL ringtone (Ctrl+V), then SAVE  ·  Esc = STOP", 30)
+        else:
+            text = self.tune_var.get().strip()
+            if text:
+                send("tune:" + text)
+                self.ex_say("")
+            self.tune_close()
+
+    def tune_close(self):
+        c = self.c5
+        self.tune_editing = False
+        c.itemconfig(self.tune_win, state="hidden")
+        c.itemconfig(self.ex_tune, state="normal")
+        self.button_text(c, "ex_tset", "SET TUNE")
+        self.root.focus_set()
+
+    def tune_test(self):
+        send("sound_stop" if self.snd_playing else "sound_test")
+
+    def update_click(self):
+        u = self.upd
+        if not u:
+            self.ex_say("Auto-update isn't installed - run the setup command once")
+        elif u.ready:
+            if self.armed:
+                self.ex_say("Press STOP first: updates only install while SAFE")
+            else:
+                u.install()
+        elif u.state not in ("installing", "done"):
+            u.check()
 
     def ex_volume(self, d):
         send(f"volume:{max(1, min(15, self.snd_vol + d))}")
 
     def update_extras(self, st):
         c = self.c5
+        u = self.upd
+        if u:
+            u.tick()
+            col = {"ready": BLUE, "failed": RED, "offline": AMBER, "current": GREEN, "done": GREEN}.get(u.state, DIM)
+            c.itemconfig(self.ex_upd, text=short(u.text, 80), fill=col)
+            self.button_text(c, "ex_upd", "UPDATE NOW" if u.ready else "…" if u.busy else "CHECK NOW")
+            for item in c.find_withtag("ex_upd"):
+                if c.type(item) == "rectangle":
+                    c.itemconfig(item, fill=BLUE if u.ready else PANEL)
+                    break
+            self.c.itemconfig(self.upd_badge, text="⬆ UPDATE READY" if u.ready else
+                              "UPDATING…" if u.state in ("installing", "done") else "")
+            if u.state == "done" and not getattr(self, "restarting", False):
+                self.restarting = True
+                self.root.after(8000 if u.notes else 1500, self.restart_new_version)
+        else:
+            c.itemconfig(self.ex_upd, text="Auto-update isn't installed - run the setup command once")
         if st is None:
             c.itemconfig(self.ex_state, text="OFFLINE", fill=AMBER)
             return
         c.itemconfig(self.ex_state, text="ARMED" if st["armed"] else "SAFE", fill=GREEN if st["armed"] else RED)
         self.snd_on, self.snd_vol = st.get("arm_sound", True), st.get("sound_volume", 5)
+        self.snd_playing = bool(st.get("playing"))
         for (rect, txt), on in ((self.kb_toggle, self.kb_on), (self.snd_toggle, self.snd_on)):
             c.itemconfig(rect, fill=GREEN if on else BG)
             c.itemconfig(txt, text="ON" if on else "OFF")
         c.itemconfig(self.ex_vol, text=str(self.snd_vol))
-        c.itemconfig(self.ex_msg, text=short(st.get("msg", "")))
+        self.button_text(c, "ex_test", "■ STOP SOUND" if self.snd_playing else "▶ TEST")
+        name = st.get("tune_name")
+        c.itemconfig(self.ex_tune, text=(f"Tune: {name} ({st.get('tune_secs', 0):.0f} s"
+                                         f"{', yours' if st.get('tune_custom') else ''}) · motors play it when armed"
+                                         " · touch any control to stop it") if name else
+                     "Motors play a short tune when armed (no speaker). Props may twitch.")
+        note = self.ex_note if time.monotonic() < self.ex_note_until else ""
+        c.itemconfig(self.ex_msg, text=short(note or st.get("msg", "")))
+
+    def restart_new_version(self):
+        self.cam.stop()
+        try:
+            updater.restart_after_update(sys.argv)
+        except Exception as ex:
+            self.upd.state, self.upd.text = "failed", f"Installed, but restart failed ({ex}) - close and reopen ROV Backup"
+            self.restarting = False
 
     # ------------------------------------------------------------ profile editor page (mouse/keyboard only)
     def build_profiles(self):
@@ -1438,7 +1545,7 @@ class Dashboard:
                 _, y0, _, y1 = c.coords(bar)
                 c.coords(bar, X(260), y0, X(260), y1)
         else:
-            armed = st["armed"]
+            armed = self.armed = st["armed"]
             c.itemconfig(self.badge, fill=GREEN if armed else RED)
             c.itemconfig(self.badge_txt, text="ARMED" if armed else "SAFE")
             if st["controller"]:

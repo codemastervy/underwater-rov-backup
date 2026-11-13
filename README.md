@@ -18,6 +18,7 @@ PS5 controller --Bluetooth/USB--> Laptop (rov.py + dashboard) --USB--> Arduino M
 | `config.toml` | Mega pins, motor jobs/flips (copied from the Pi) |
 | `profiles.json` | drive profiles (copied from the Pi) |
 | `setup.sh` | one-command install / update (see above) |
+| `updater.py` | automatic updates from GitHub (used by the app) |
 | `install.sh` · `upload-mega.sh` · `run.sh` | set up · flash the Mega · start |
 
 ## Wiring (Mega)
@@ -50,6 +51,10 @@ curl -fsSL https://raw.githubusercontent.com/codemastervy/underwater-rov-backup/
 - **Already installed:** downloads the latest version and keeps your `config.toml`, `profiles.json` and `camera.json`.
   If the Mega is plugged in and the firmware changed, it uploads the new firmware too.
 - Close the ROV Backup app before running it. Nothing needs installing first, not even git.
+- **After that you never need the command again:** the app checks GitHub for a new version when it opens and every
+  30 minutes. When there is one, it shows **⬆ UPDATE READY**; tap it (or **SETUP › EXTRAS › UPDATE NOW**) while SAFE.
+  It downloads, installs and reopens itself. Settings are kept. If the update has new **Mega firmware**, the
+  update panel tells you: close the app, plug in the Mega and run `bash ~/underwater-rov-backup/upload-mega.sh`.
 
 Then pair the controller in the laptop's Bluetooth settings (PS5: hold **CREATE + PS**), or plug it in with a USB cable.
 
@@ -71,8 +76,10 @@ Open **ROV Backup** from the app menu (or `bash run.sh`). The controls are the s
 **Enter = ARM**, **Esc = STOP**. If the window closes or freezes, the keys count as released (and with no controller the
 motors disarm).
 
-**Arm sound:** when armed, the motors play a short 3-note tune (no speaker: a tiny audio-frequency PWM makes the motors
-whistle). On/off, volume and TEST are in SETUP › EXTRAS. **This needs the updated firmware: run the setup command again with the Mega plugged in.**
+**Arm sound:** when armed, the motors play **the first 15 s of "Can't Stop" (Red Hot Chili Peppers) in beeps** (no
+speaker: a tiny audio-frequency PWM makes the motors whistle). **Touch any control and it stops at once** so you can
+drive. **SET TUNE** takes any RTTTL ringtone text (saved in `tune.txt`); **DEFAULT TUNE** goes back. On/off, volume and
+TEST are in SETUP › EXTRAS. **This needs the updated firmware: run the setup command again with the Mega plugged in.**
 
 **Autopilot** (SETUP › AUTOPILOT, mouse only, OFF at every start-up): trim, CRUISE, LINE following, colour TARGET
 following (pick the colour by clicking the object: camera page › PICK), camera HEADING hold and timed MISSIONs.

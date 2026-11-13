@@ -10,4 +10,5 @@ arduino-cli core update-index
 arduino-cli core install arduino:avr
 arduino-cli compile --fqbn arduino:avr:mega "$DIR/rov_mega"
 arduino-cli upload --fqbn arduino:avr:mega -p "$PORT" "$DIR/rov_mega"
+sha256sum "$DIR/rov_mega/rov_mega.ino" | cut -d' ' -f1 > "$DIR/.mega-firmware"   # the app checks this
 echo "Uploaded. (Arduino IDE works too: open rov_mega/rov_mega.ino, board 'Arduino Mega or Mega 2560', Upload.)"

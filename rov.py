@@ -25,8 +25,10 @@ Keyboard drive (switch it on on the case screen: SETUP > EXTRAS):
 Autopilot (SETUP > AUTOPILOT, mouse only, off at every start-up): trim, cruise control, line following,
 colour-target following, camera heading hold, and pre-programmed missions. See class Autopilot.
 
-Arm sound: when armed, the motors play a short tune (quiet audio-frequency PWM, like a
-3D printer's stepper "music"). On/off, volume and TEST are on SETUP > EXTRAS.
+Arm sound: when armed, the motors play a tune (quiet audio-frequency PWM, like a 3D printer's
+stepper "music"): the first 15 s of "Can't Stop" as beeps, or any RTTTL ringtone you paste in.
+Touching any control stops the tune at once so you can drive. On/off, volume, tune and TEST are
+on SETUP > EXTRAS.
 
 Safety: starts disarmed; disarms on controller loss, heartbeat loss, panel switch off,
 or program exit. The BTS7960 enable line is only HIGH while armed.
@@ -62,7 +64,74 @@ KEY_AXES = {"w": ("surge", 1.0), "s": ("surge", -1.0), "d": ("yaw", 1.0), "a": (
 VISION_PATH = "/dev/shm/rov-vision.json"  # camera autopilot results, written by rov_gui.py
 
 # Motor "music": (frequency Hz, seconds); 0 Hz = silence.
-TUNES = {"arm": [(1047, 0.10), (0, 0.03), (1319, 0.10), (0, 0.03), (1568, 0.20)]}
+TUNES = {"beeps": [(1047, 0.10), (0, 0.03), (1319, 0.10), (0, 0.03), (1568, 0.20)]}
+TUNE_MAX = 15.0          # seconds: longer tunes are cut off here
+# Default arm tune: the first 15 s of "Can't Stop" (Red Hot Chili Peppers) as beeps - the muted 16th-note
+# guitar intro at 89 BPM, worked out from the recording. Any RTTTL ringtone can replace it
+# (SETUP > EXTRAS > SET TUNE, or put the text in tune.txt next to config.toml).
+DEFAULT_TUNE = ("Cant Stop:d=16,o=5,b=89:d,e,e,d,e,e,d,e,e,d,e,e,e,e,e,e,e,e,e,b4,e,e,e,e,e,b4,e,b4,e,e,e,b4,"
+                "e,b4,e,b4,e,b4,e,e,e,e,e,b4,e,b4,e,b4,e,b4,e,b4,e,b4,e,b4,e,b4,e,b4,e,b4,e,b4,e,b4,e,b4,e,e,e,"
+                "e,e,e,e,e,e,e,e,e,e,e,e,e,e,e,e,e,e,e,e")
+NOTE_SEMI = {"c": -9, "d": -7, "e": -5, "f": -4, "g": -2, "a": 0, "b": 2, "h": 2}
+
+
+def parse_rtttl(text, max_s=TUNE_MAX):
+    """RTTTL ringtone ('name:d=4,o=5,b=120:8e6,8d#6,...') -> (name, [(Hz, seconds), ...]).
+    Each note is followed by a short gap so repeated notes are heard separately. Raises ValueError."""
+    parts = " ".join(text.split()).split(":")
+    if len(parts) != 3:
+        raise ValueError("not a ringtone - needs name:settings:notes")
+    name, settings, notes = parts[0].strip()[:24] or "Tune", parts[1], parts[2]
+    d, o, b = 4, 6, 63
+    for kv in settings.split(","):
+        if "=" in kv:
+            k, v = kv.split("=", 1)
+            k, v = k.strip().lower(), v.strip()
+            if k in ("d", "o", "b") and v.isdigit():
+                d, o, b = (int(v), o, b) if k == "d" else (d, int(v), b) if k == "o" else (d, o, int(v))
+    if not (1 <= d <= 64 and 3 <= o <= 8 and 10 <= b <= 900):
+        raise ValueError("bad d=, o= or b= setting")
+    whole = 240.0 / b
+    out, total = [], 0.0
+    for tok in notes.lower().replace(" ", "").split(","):
+        if not tok:
+            continue
+        i = 0
+        while i < len(tok) and tok[i].isdigit():
+            i += 1
+        dur = int(tok[:i]) if i else d
+        rest = tok[i:]
+        if not rest or rest[0] not in NOTE_SEMI and rest[0] != "p":
+            raise ValueError(f"bad note '{tok}'")
+        note, rest = rest[0], rest[1:]
+        sharp = rest.startswith("#")
+        rest = rest[1:] if sharp else rest
+        dotted = "." in rest
+        rest = rest.replace(".", "")
+        octave = int(rest) if rest.isdigit() else o
+        if dur not in (1, 2, 4, 8, 16, 32, 64) or not 3 <= octave <= 8:
+            raise ValueError(f"bad note '{tok}'")
+        sec = whole / dur * (1.5 if dotted else 1.0)
+        if note == "p":
+            out.append((0, sec))
+        else:
+            hz = 440.0 * 2 ** ((NOTE_SEMI[note] + sharp + 12 * (octave - 4)) / 12)
+            hz = max(40, min(10000, round(hz)))
+            on = sec * (0.9 if sec > 0.25 else 0.6)        # short notes staccato, like muted strums
+            out += [(hz, on), (0, sec - on)]
+        total += sec
+        if total >= max_s:
+            break
+    if not any(f for f, _ in out):
+        raise ValueError("no notes")
+    # cut at max_s
+    cut, t = [], 0.0
+    for f, sec in out:
+        if t >= max_s:
+            break
+        cut.append((f, min(sec, max_s - t)))
+        t += sec
+    return name, cut
 
 # ---- drive profiles (edited on the case screen: SETUP > PROFILES; stored in profiles.json) ----
 # Controls, read so that stick up / stick right / trigger pressed / D-pad up / D-pad right = positive.
@@ -829,6 +898,9 @@ class ROV:
         self.sound_on = bool(c.get("arm_sound", True))
         self.sound_volume = max(1, min(15, int(c.get("sound_volume", 5))))
         self.tune = None
+        self.tune_path = os.path.join(os.path.dirname(os.path.abspath(config_path or os.path.join(HERE, "config.toml"))),
+                                      "tune.txt")
+        self.load_tune()
         self.ap = Autopilot(self, os.path.join(os.path.dirname(os.path.abspath(config_path or
                                                                                os.path.join(HERE, "config.toml"))),
                                                "autopilot.json"))
@@ -1095,6 +1167,47 @@ class ROV:
             self.start_tune("arm", test=True)
             self.say("Playing arm sound...")
 
+    def load_tune(self):
+        """Arm tune: tune.txt (your ringtone) if it's there and valid, else the built-in one."""
+        text = ""
+        try:
+            with open(self.tune_path) as f:
+                text = f.read().strip()
+        except OSError:
+            pass
+        for src in ((text, "custom"), (DEFAULT_TUNE, "default")) if text else ((DEFAULT_TUNE, "default"),):
+            try:
+                self.tune_name, notes = parse_rtttl(src[0])
+                self.tune_custom = src[1] == "custom"
+                break
+            except ValueError as ex:
+                log.warning(f"tune.txt ignored: {ex}")
+        else:
+            self.tune_name, notes, self.tune_custom = "Beeps", TUNES["beeps"], False
+        TUNES["arm"] = notes
+        self.tune_secs = sum(d for _, d in notes)
+
+    def set_tune(self, text):
+        """New arm tune from the screen ('' = back to the built-in one), saved in tune.txt."""
+        text = " ".join(text.split())
+        if text:
+            try:
+                name, notes = parse_rtttl(text)
+            except ValueError as ex:
+                self.say(f"Tune not saved: {ex}")
+                return
+        try:
+            if text:
+                with open(self.tune_path, "w") as f:
+                    f.write(text + "\n")
+            elif os.path.exists(self.tune_path):
+                os.remove(self.tune_path)
+        except OSError as ex:
+            self.say(f"Tune not saved: {ex.strerror or ex}")
+            return
+        self.load_tune()
+        self.say(f"Arm tune: {self.tune_name} ({self.tune_secs:.1f} s)")
+
     def start_tune(self, name, test=False):
         self.tune = {"notes": TUNES[name], "t0": time.monotonic(), "cur": None, "test": test}
 
@@ -1191,6 +1304,10 @@ class ROV:
         self.read_keys()
         if self.armed and not self.pad and not self.kbd_live:
             self.disarm("keyboard link lost" if self.kbd_enabled else "no controller")
+        if self.tune and (self.pilot_input() or self.ap.mode):
+            self.end_tune()          # the pilot wants to drive: stop the music at once
+            if self.armed:
+                self.say("ARMED")
         if self.tune:
             self.play_tune()
             return
@@ -1228,6 +1345,9 @@ class ROV:
             "arm_sound": self.sound_on,
             "sound_volume": self.sound_volume,
             "playing": bool(self.tune),
+            "tune_name": self.tune_name,
+            "tune_secs": round(self.tune_secs, 1),
+            "tune_custom": self.tune_custom,
             "autopilot": self.ap.status(),
             "msg": self.status_msg,
         }
@@ -1270,6 +1390,10 @@ class ROV:
             self.set_sound(volume=int(cmd.split(":")[1]))
         elif cmd == "sound_test":
             self.test_sound()
+        elif cmd == "sound_stop":
+            self.end_tune()
+        elif cmd.startswith("tune:"):
+            self.set_tune(cmd[5:])
         elif cmd.startswith("ap_enable:"):
             self.ap.set_enabled(cmd.endswith(":1"))
         elif cmd == "ap_off":
