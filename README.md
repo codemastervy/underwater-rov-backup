@@ -17,6 +17,7 @@ PS5 controller --Bluetooth/USB--> Laptop (rov.py + dashboard) --USB--> Arduino M
 | `rov_gui.py` | dashboard window: camera, profiles editor, motor flip, STOP |
 | `config.toml` | Mega pins, motor jobs/flips (copied from the Pi) |
 | `profiles.json` | drive profiles (copied from the Pi) |
+| `setup.sh` | one-command install / update (see above) |
 | `install.sh` · `upload-mega.sh` · `run.sh` | set up · flash the Mega · start |
 
 ## Wiring (Mega)
@@ -39,12 +40,18 @@ lets you swap over in a minute.
 
 The Mega's built-in **"L" LED is on whenever the motors are enabled**.
 
-## Setup (once)
-1. Copy this folder to the laptop (USB stick, or `git`/`scp`).
-2. `bash install.sh`. This installs packages, sets permissions, turns on Bluetooth and adds **ROV Backup** to the app menu.
-   **Then log out and back in.**
-3. Plug in the Mega and run `bash upload-mega.sh` (or use the Arduino IDE: board *Arduino Mega or Mega 2560*).
-4. Pair the controller in the laptop's Bluetooth settings (PS5: hold **CREATE + PS**), or plug it in with a USB cable.
+## Install or update: one command
+On the EndeavourOS laptop, connected to the internet (Wi-Fi is fine), open a terminal and run:
+```bash
+curl -fsSL https://raw.githubusercontent.com/codemastervy/underwater-rov-backup/main/setup.sh | bash
+```
+- **New laptop:** installs everything (Python libraries, Bluetooth, ffmpeg, arduino-cli), adds **ROV Backup** to the app
+  menu, and uploads the firmware if the **Mega is plugged in**. Then **log out and back in once**.
+- **Already installed:** downloads the latest version and keeps your `config.toml`, `profiles.json` and `camera.json`.
+  If the Mega is plugged in and the firmware changed, it uploads the new firmware too.
+- Close the ROV Backup app before running it. Nothing needs installing first, not even git.
+
+Then pair the controller in the laptop's Bluetooth settings (PS5: hold **CREATE + PS**), or plug it in with a USB cable.
 
 ## Driving
 
@@ -65,8 +72,7 @@ Open **ROV Backup** from the app menu (or `bash run.sh`). The controls are the s
 motors disarm).
 
 **Arm sound:** when armed, the motors play a short 3-note tune (no speaker: a tiny audio-frequency PWM makes the motors
-whistle). On/off, volume and TEST are in SETUP › EXTRAS. **This needs the updated firmware: run `bash upload-mega.sh`
-again after pulling this version.**
+whistle). On/off, volume and TEST are in SETUP › EXTRAS. **This needs the updated firmware: run the setup command again with the Mega plugged in.**
 
 **Camera picture:** CAMERA › PICTURE adjusts gain (ISO), brightness, contrast, colour and warmth (saved).
 
