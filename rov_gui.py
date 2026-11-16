@@ -42,10 +42,6 @@ def key_label(k):
     if not k:
         return "—"
     return KEY_NAMES.get(k, k.upper() if len(k) == 1 else k.replace("kp_", "Num ").title())
-
-
-def keymap_path():
-    return os.path.join(core.HERE, "keymap.json")
 W, H = 800, 480
 # Safe area: this monitor crops the edges of the HDMI picture. Increase these if
 # anything is still cut off (left, top, right, bottom, in pixels). Or run with
@@ -367,9 +363,10 @@ class Dashboard:
         self.kb_on = False          # KEYBOARD DRIVE switch (comes from rov.py status)
         self.kb_down = set()
         self.kb_jobs = {}
-        self.keymap = core.load_keymap(keymap_path())     # keyboard drive profile: action -> key
+        self.keymap = dict(core.KEY_PRESETS["WASD"])     # keys of the active keyboard profile (from rov.py)
         self.kb_keys = set(core.key_axes(self.keymap))
-        self.key_listen = None                           # action waiting for "press a key" (keys page)
+        self.kbd_name = ""
+        self.key_listen = None                           # action waiting for "press a key" (profile editor)
         self.page = "main"
         self.last_view_toggle = None
         self.cam = CameraFeed()
@@ -457,7 +454,6 @@ class Dashboard:
         self.build_extras()
         self.build_autopilot()
         self.build_mission()
-        self.build_keys()
         self.build_camera()
         self.update()
         self.refresh_video()
@@ -523,7 +519,7 @@ class Dashboard:
         elif k in ("minus", "kp_subtract"):
             self.press("speed-")
         elif k == "p":
-            self.press("profile")
+            self.press("kbd_profile" if self.kb_on else "profile")
         elif k == "c":
             self.toggle_camera()
 
@@ -605,8 +601,7 @@ class Dashboard:
             self.ed_load()
         self.root.focus_set()
         for name, canvas in (("main", self.c), ("setup", self.c2), ("camera", self.c3), ("profiles", self.c4),
-                             ("extras", self.c5), ("autopilot", self.c6), ("mission", self.c7),
-                             ("keys", self.c8)):
+                             ("extras", self.c5), ("autopilot", self.c6), ("mission", self.c7)):
             if name == page:
                 canvas.pack(expand=True)
             else:
@@ -654,8 +649,7 @@ class Dashboard:
 
         c.create_rectangle(20, 74, 780, 184, fill=PANEL, width=0)
         c.create_text(36, 94, anchor="w", text="KEYBOARD DRIVE", font=fnt(15, "bold"), fill=FG)
-        c.create_text(36, 116, anchor="w", font=fnt(10), fill=DIM,
-                      text="Drive with this laptop's keyboard. Works with or without the controller.")
+        self.kb_desc = c.create_text(36, 116, anchor="w", font=fnt(10), fill=DIM, text="")
         self.kb_legend = []
         for i, (pair, what) in enumerate(((("forward", "back"), "forward/back"), (("left", "right"), "turn left/right"),
                                           (("up", "down"), "up/down"), (("tilt_up", "tilt_down"), "tilt nose up/down"),
@@ -667,7 +661,7 @@ class Dashboard:
             c.create_text(x + (60 if fixed else 100), y, anchor="w", text=what, font=fnt(10), fill=DIM)
             if pair:
                 self.kb_legend.append((kt, pair))
-        self.small_button(c, 614, 134, 764, 176, "EDIT KEYS", self.show_keys, tag="ex_keys")
+        self.small_button(c, 614, 134, 764, 176, "EDIT KEYS", self.show_key_profiles, tag="ex_keys")
         self.kb_toggle = self.toggle(c, 614, 82, "ex_kb", lambda: send(f"keyboard:{0 if self.kb_on else 1}"))
 
         c.create_rectangle(20, 192, 780, 318, fill=PANEL, width=0)
@@ -784,9 +778,10 @@ class Dashboard:
             c.itemconfig(rect, fill=GREEN if on else BG)
             c.itemconfig(txt, text="ON" if on else "OFF")
         c.itemconfig(self.ex_vol, text=str(self.snd_vol))
+        c.itemconfig(self.kb_desc, text=short(f"Keys from keyboard profile '{self.kbd_name}' (EDIT KEYS / P = next).", 80))
         for kt, (a1, a2) in self.kb_legend:
             c.itemconfig(kt, text=f"{key_label(self.keymap.get(a1))} / {key_label(self.keymap.get(a2))}")
-        self.update_keys(st)
+
         self.button_text(c, "ex_test", "■ STOP SOUND" if self.snd_playing else "▶ TEST")
         name = st.get("tune_name")
         c.itemconfig(self.ex_tune, text=(f"Tune: {name} ({st.get('tune_secs', 0):.0f} s"
@@ -809,7 +804,7 @@ class Dashboard:
         c = self.c4 = tk.Canvas(self.root, width=CW, height=CH, bg=BG, highlightthickness=0)
         c.bind("<Button-1>", lambda e: self.root.focus_set(), add="+")
         self.ed_profiles, self.ed_sel, self.ed_scroll, self.ed_dirty = [], 0, 0, False
-        self.active_name = None
+        self.active_name = self.active_kbd = None
         c.create_rectangle(0, 0, W, 66, fill=PANEL, width=0)
         self.setup_tabs(c, "profiles")
         self.prof_state = c.create_text(785, 33, anchor="e", text="", font=fnt(14, "bold"), fill=FG)
@@ -817,22 +812,25 @@ class Dashboard:
         # left: list of profiles
         c.create_text(20, 76, anchor="w", text="PROFILES", font=fnt(10, "bold"), fill=DIM)
         self.list_rows = []
-        for i in range(7):
+        for i in range(6):
             y = 88 + i * 34
             tag = f"prow_{i}"
             rect = c.create_rectangle(20, y, 245, y + 30, fill=PANEL, outline="", tags=tag)
             txt = c.create_text(30, y + 15, anchor="w", text="", font=fnt(12, "bold"), fill=FG, tags=tag)
+            kind = c.create_text(240, y + 15, anchor="e", text="", font=fnt(8, "bold"), fill=DIM, tags=tag)
             c.tag_bind(tag, "<Button-1>", lambda e, i=i: self.ed_select(self.ed_scroll + i))
-            self.list_rows.append((rect, txt))
-        self.small_button(c, 20, 330, 128, 358, "▲", lambda: self.ed_scroll_by(-1), tag="p_up")
-        self.small_button(c, 137, 330, 245, 358, "▼", lambda: self.ed_scroll_by(1), tag="p_dn")
-        self.small_button(c, 20, 366, 128, 406, "+ NEW", self.ed_new, tag="p_new")
-        self.small_button(c, 137, 366, 245, 406, "COPY", self.ed_copy, tag="p_copy")
-        self.small_button(c, 20, 414, 245, 454, "DELETE", self.ed_delete, tag="p_del")
+            self.list_rows.append((rect, txt, kind))
+        self.small_button(c, 20, 296, 128, 324, "▲", lambda: self.ed_scroll_by(-1), tag="p_up")
+        self.small_button(c, 137, 296, 245, 324, "▼", lambda: self.ed_scroll_by(1), tag="p_dn")
+        self.small_button(c, 20, 330, 245, 364, "+ CONTROLLER", lambda: self.ed_new("controller"), tag="p_newc")
+        self.small_button(c, 20, 370, 245, 404, "+ KEYBOARD", lambda: self.ed_new("keyboard"), tag="p_newk")
+        self.small_button(c, 20, 412, 128, 452, "COPY", self.ed_copy, tag="p_copy")
+        self.small_button(c, 137, 412, 245, 452, "DELETE", self.ed_delete, tag="p_del")
 
         # right: name + one row per control
         c.create_text(262, 86, anchor="w", text="Name", font=fnt(11, "bold"), fill=DIM)
         self.ed_msg = c.create_text(262, 112, anchor="w", text="", font=fnt(10), fill=AMBER)
+        before = set(c.find_all())
         for x, t in ((262, "CONTROL"), (530, "DOES"), (695, "REV"), (754, "POWER")):
             c.create_text(x, 130, anchor="w" if x == 262 else "center", text=t, font=fnt(9, "bold"), fill=DIM)
         self.ctrl_rows = []
@@ -851,6 +849,22 @@ class Dashboard:
             pwt = c.create_text(754, y + 14, text="", font=fnt(10, "bold"), fill=FG, tags=f"pw_{k}")
             c.tag_bind(f"pw_{k}", "<Button-1>", lambda e, k=k: self.ed_power(k))
             self.ctrl_rows.append((k, act, rev, revt, pwt))
+        for item in set(c.find_all()) - before:
+            c.addtag_withtag("ctrlui", item)
+        # keyboard profile: one box per action - tap it, then press the key
+        c.create_text(262, 130, anchor="w", font=fnt(9, "bold"), fill=DIM, tags="keyui",
+                      text="KEYBOARD PROFILE · tap a box, then press a key · Enter = ARM, Esc = STOP (fixed)")
+        self.key_boxes = {}
+        for i, (a, label, *_r) in enumerate(core.KEY_ACTIONS):
+            x0, y = 262 + (i % 2) * 262, 140 + (i // 2) * 52
+            c.create_rectangle(x0, y, x0 + 256, y + 46, fill=PANEL, width=0, tags="keyui")
+            c.create_text(x0 + 10, y + 23, anchor="w", text=label, font=fnt(11, "bold"), fill=FG, tags="keyui")
+            tag = f"key_{a}"
+            rect = c.create_rectangle(x0 + 128, y + 6, x0 + 248, y + 40, fill=BG, outline=DIM, width=2,
+                                      tags=(tag, "keyui"))
+            txt = c.create_text(x0 + 188, y + 23, text="", font=fnt(12, "bold"), fill=FG, tags=(tag, "keyui"))
+            c.tag_bind(tag, "<Button-1>", lambda e, a=a: self.key_click(a))
+            self.key_boxes[a] = (rect, txt)
         self.small_button(c, 262, 404, 500, 454, "SAVE", lambda: self.ed_save(False), color=PANEL, tag="p_save")
         self.small_button(c, 512, 404, 780, 454, "SAVE + USE", lambda: self.ed_save(True), color=GREEN,
                           tag="p_use")
@@ -872,9 +886,10 @@ class Dashboard:
                 profs = core.clean_profiles(json.load(f))
         except (OSError, ValueError):
             profs = []
-        self.ed_profiles = profs or core.clean_profiles({"profiles": core.DEFAULT_PROFILES})
+        self.ed_profiles = core.complete_profiles(profs)
         names = [p["name"] for p in self.ed_profiles]
         self.ed_sel = names.index(self.active_name) if self.active_name in names else 0
+        self.ed_scroll = max(0, min(self.ed_sel - 2, len(self.ed_profiles) - 6))
         self.ed_dirty = False
         self.ed_note("")
         self.ed_render(update_name=True)
@@ -893,11 +908,12 @@ class Dashboard:
     def ed_select(self, idx):
         if 0 <= idx < len(self.ed_profiles):
             self.ed_sel = idx
+            self.key_listen = None
             self.root.focus_set()
             self.ed_render(update_name=True)
 
     def ed_scroll_by(self, d):
-        self.ed_scroll = max(0, min(self.ed_scroll + d, max(0, len(self.ed_profiles) - 7)))
+        self.ed_scroll = max(0, min(self.ed_scroll + d, max(0, len(self.ed_profiles) - 6)))
         self.ed_render()
 
     def ed_unique(self, base):
@@ -912,13 +928,16 @@ class Dashboard:
     def ed_add(self, prof):
         self.ed_profiles.append(prof)
         self.ed_sel = len(self.ed_profiles) - 1
-        self.ed_scroll = max(0, self.ed_sel - 6)
+        self.ed_scroll = max(0, self.ed_sel - 5)
         self.ed_changed()
         self.ed_render(update_name=True)
 
-    def ed_new(self):
-        base = json.loads(json.dumps(core.DEFAULT_PROFILES[1]["map"]))   # start from Standard
-        self.ed_add({"name": self.ed_unique("New profile"), "map": base})
+    def ed_new(self, kind):
+        if kind == "keyboard":
+            self.ed_add({"name": self.ed_unique("New keys"), "type": "keyboard", "keys": dict(core.KEY_PRESETS["WASD"])})
+        else:
+            base = json.loads(json.dumps(core.DEFAULT_PROFILES[1]["map"]))   # start from Standard
+            self.ed_add({"name": self.ed_unique("New controller"), "type": "controller", "map": base})
 
     def ed_copy(self):
         cur = json.loads(json.dumps(self.ed_cur()))
@@ -931,7 +950,7 @@ class Dashboard:
             return
         del self.ed_profiles[self.ed_sel]
         self.ed_sel = min(self.ed_sel, len(self.ed_profiles) - 1)
-        self.ed_scroll = min(self.ed_scroll, max(0, len(self.ed_profiles) - 7))
+        self.ed_scroll = min(self.ed_scroll, max(0, len(self.ed_profiles) - 6))
         self.ed_changed()
         self.ed_render(update_name=True)
 
@@ -985,7 +1004,8 @@ class Dashboard:
             return
         send(f"reload_profiles:{self.ed_sel if use else -1}")
         self.ed_dirty = False
-        self.ed_note(f"Saved. Now driving with '{self.ed_cur()['name']}'" if use else "Saved", GREEN)
+        kind = "keyboard drive" if self.ed_cur()["type"] == "keyboard" else "the controller"
+        self.ed_note(f"Saved. {kind[0].upper() + kind[1:]} now uses '{self.ed_cur()['name']}'" if use else "Saved", GREEN)
         self.ed_render()
 
     _setting_name = False
@@ -994,20 +1014,33 @@ class Dashboard:
         c = self.c4
         if not self.ed_profiles:
             return
-        for i, (rect, txt) in enumerate(self.list_rows):
+        for i, (rect, txt, kind) in enumerate(self.list_rows):
             j = self.ed_scroll + i
             if j < len(self.ed_profiles):
                 p = self.ed_profiles[j]
-                mark = "● " if p["name"] == self.active_name and not self.ed_dirty else "   "
-                c.itemconfig(txt, text=short(mark + p["name"], 22))
+                on = p["name"] in (self.active_name, self.active_kbd) and not self.ed_dirty
+                c.itemconfig(txt, text=short(("● " if on else "   ") + p["name"], 17))
+                c.itemconfig(kind, text="KEYS" if p["type"] == "keyboard" else "PAD")
                 c.itemconfig(rect, fill=BLUE if j == self.ed_sel else PANEL)
             else:
                 c.itemconfig(txt, text="")
+                c.itemconfig(kind, text="")
                 c.itemconfig(rect, fill=BG)
         if update_name:
             self._setting_name = True
             self.name_var.set(self.ed_cur()["name"])
             self._setting_name = False
+        keyboard = self.ed_cur()["type"] == "keyboard"
+        c.itemconfig("ctrlui", state="hidden" if keyboard else "normal")
+        c.itemconfig("keyui", state="normal" if keyboard else "hidden")
+        if keyboard:
+            keys = self.ed_cur()["keys"]
+            for a, (rect, txt) in self.key_boxes.items():
+                listening = a == self.key_listen
+                c.itemconfig(rect, fill=AMBER if listening else BG)
+                c.itemconfig(txt, text="PRESS A KEY…" if listening else key_label(keys.get(a)),
+                             fill=BG if listening else FG)
+            return
         m = self.ed_cur()["map"]
         for k, act, rev, revt, pwt in self.ctrl_rows:
             e = m.get(k, {})
@@ -1018,129 +1051,60 @@ class Dashboard:
             c.itemconfig(revt, text="REV" if inv else "—")
             c.itemconfig(pwt, text=f"{int(round(e.get('power', 1.0) * 100))}%")
 
+    def show_key_profiles(self):
+        """EXTRAS > EDIT KEYS: the PROFILES page with the keyboard profile in use selected."""
+        self.show_profiles()
+        names = [p["name"] for p in self.ed_profiles]
+        if self.active_kbd in names:
+            self.ed_sel = names.index(self.active_kbd)
+            self.ed_scroll = max(0, min(self.ed_sel - 2, len(names) - 6))
+            self.ed_render(update_name=True)
+
+    def keys_render(self):
+        if self.page == "profiles":
+            self.ed_render()
+
+    def key_click(self, action):
+        self.key_listen = None if self.key_listen == action else action
+        self.root.focus_set()
+        self.ed_render()
+        if self.key_listen:
+            self.ed_note("Press the new key (Esc = cancel)")
+
+    def key_bind(self, k):
+        action, self.key_listen = self.key_listen, None
+        keys = self.ed_cur().get("keys")
+        if keys is None:
+            return
+        if k in core.FIXED_KEYS:
+            self.ed_render()
+            self.ed_note(f"{'F11' if k == 'f11' else key_label(k)} is fixed (ARM / STOP / full screen): pick another key", RED)
+            return
+        old = keys.get(action, "")
+        swapped = False
+        for other, key in keys.items():          # key already used in this profile: the two swap
+            if key == k and other != action:
+                keys[other] = old
+                swapped = True
+        keys[action] = k
+        self.ed_changed()
+        if swapped:
+            self.ed_note(f"{key_label(k)} was already used: swapped. Press SAVE or SAVE + USE")
+
     def update_profiles_page(self, st):
         if st is None:
             self.c4.itemconfig(self.prof_state, text="OFFLINE", fill=AMBER)
             return
         self.c4.itemconfig(self.prof_state, text="ARMED" if st["armed"] else "SAFE",
                            fill=GREEN if st["armed"] else RED)
-        if st.get("profile_name") != self.active_name:
-            self.active_name = st.get("profile_name")
+        if (st.get("profile_name"), st.get("keyboard_profile")) != (self.active_name, self.active_kbd):
+            self.active_name, self.active_kbd = st.get("profile_name"), st.get("keyboard_profile")
             if self.page == "profiles":
                 self.ed_render()
 
     # ------------------------------------------------------------ autopilot page (mouse only)
     def show_autopilot(self):
         self.show_page("autopilot")
-
-    # ------------------------------------------------------------ keyboard keys page (keyboard drive profile)
-    def show_keys(self):
-        self.key_listen = None
-        self.keys_render()
-        self.show_page("keys")
-
-    def build_keys(self):
-        c = self.c8 = tk.Canvas(self.root, width=CW, height=CH, bg=BG, highlightthickness=0)
-        c.create_rectangle(0, 0, W, 66, fill=PANEL, width=0)
-        self.small_button(c, 12, 12, 112, 54, "◀ BACK", self.show_extras, tag="keys_back")
-        c.create_text(130, 33, anchor="w", text="KEYBOARD KEYS", font=fnt(17, "bold"), fill=FG)
-        self.keys_state = c.create_text(785, 33, anchor="e", text="", font=fnt(14, "bold"), fill=FG)
-        c.create_text(24, 86, anchor="w", font=fnt(11), fill=DIM,
-                      text="Tap a box, then press the key you want. Enter = ARM and Esc = STOP are fixed.")
-        self.key_boxes = {}
-        for i, (a, label, *_r) in enumerate(core.KEY_ACTIONS):
-            x0, y = 20 + (i % 2) * 390, 102 + (i // 2) * 54
-            c.create_rectangle(x0, y, x0 + 370, y + 46, fill=PANEL, width=0)
-            c.create_text(x0 + 16, y + 23, anchor="w", text=label, font=fnt(13, "bold"), fill=FG)
-            tag = f"key_{a}"
-            rect = c.create_rectangle(x0 + 196, y + 6, x0 + 360, y + 40, fill=BG, outline=DIM, width=2, tags=tag)
-            txt = c.create_text(x0 + 278, y + 23, text="", font=fnt(13, "bold"), fill=FG, tags=tag)
-            c.tag_bind(tag, "<Button-1>", lambda e, a=a: self.key_click(a))
-            self.key_boxes[a] = (rect, txt)
-        c.create_text(24, 398, anchor="w", text="PRESETS", font=fnt(11, "bold"), fill=DIM)
-        for x0, name in ((110, "WASD"), (250, "ARROWS")):
-            self.small_button(c, x0, 376, x0 + 130, 420, name, lambda n=name: self.key_preset(n), tag=f"kp_{name}")
-        c.create_rectangle(20, 428, 780, 470, fill=PANEL, width=0)
-        self.keys_msg = c.create_text(34, 449, anchor="w", text="", font=fnt(12), fill=FG)
-        c.create_rectangle(1, 1, W - 1, H - 1, outline=DIM, width=1)
-        c.scale("all", 0, 0, SX, SY)
-        c.move("all", OX, OY)
-        self.keys_note, self.keys_note_until = "", 0.0
-
-    def keys_say(self, text, secs=5):
-        self.keys_note, self.keys_note_until = text, time.monotonic() + secs
-
-    def keys_render(self):
-        if not hasattr(self, "key_boxes"):
-            return
-        for a, (rect, txt) in self.key_boxes.items():
-            listening = a == self.key_listen
-            self.c8.itemconfig(rect, fill=AMBER if listening else BG)
-            self.c8.itemconfig(txt, text="PRESS A KEY…" if listening else key_label(self.keymap.get(a)),
-                               fill=BG if listening else FG)
-
-    def key_click(self, action):
-        if self.armed:
-            self.keys_say("Press STOP first: keys can only be changed while SAFE")
-            return
-        self.key_listen = None if self.key_listen == action else action
-        self.root.focus_set()
-        self.keys_render()
-        if self.key_listen:
-            self.keys_say("Press the new key (Esc = cancel)", 30)
-
-    def key_bind(self, k):
-        action, self.key_listen = self.key_listen, None
-        if k in core.FIXED_KEYS:
-            self.keys_say(f"{key_label(k) if k != 'f11' else 'F11'} is fixed (ARM / STOP / full screen): pick another key")
-        else:
-            old = self.keymap.get(action)
-            for other, key in self.keymap.items():      # key already used: the two actions swap keys
-                if key == k and other != action:
-                    self.keymap[other] = old
-                    self.keys_say(f"{key_label(k)} was used for something else: swapped")
-                    break
-            else:
-                self.keys_say(f"{dict((x[0], x[1]) for x in core.KEY_ACTIONS)[action]} = {key_label(k)}  (saved)")
-            self.keymap[action] = k
-            self.keys_save()
-        self.keys_render()
-
-    def key_preset(self, name):
-        if self.armed:
-            self.keys_say("Press STOP first: keys can only be changed while SAFE")
-            return
-        self.key_listen = None
-        self.keymap = dict(core.KEY_PRESETS[name])
-        self.keys_save()
-        self.keys_render()
-        self.keys_say(f"{name} keys (saved)")
-
-    def keys_save(self):
-        self.kb_release_all()
-        self.kb_keys = set(core.key_axes(self.keymap))
-        try:
-            with open(keymap_path() + ".tmp", "w") as f:
-                json.dump(self.keymap, f, indent=1)
-            os.replace(keymap_path() + ".tmp", keymap_path())
-        except OSError as ex:
-            self.keys_say(f"Could not save: {ex.strerror or ex}")
-            return
-        send("reload_keys")
-
-    def update_keys(self, st):
-        c = self.c8
-        if st is None:
-            c.itemconfig(self.keys_state, text="OFFLINE", fill=AMBER)
-        else:
-            c.itemconfig(self.keys_state, text="ARMED" if st["armed"] else "SAFE",
-                         fill=GREEN if st["armed"] else RED)
-        if self.key_listen and self.armed:
-            self.key_listen = None
-            self.keys_render()
-        note = self.keys_note if time.monotonic() < self.keys_note_until else ""
-        c.itemconfig(self.keys_msg, text=short(note or ("Keyboard drive is OFF: switch it on in SETUP › EXTRAS"
-                                                        if not self.kb_on else "")))
 
     def show_mission(self):
         self.mi_load()
@@ -1770,6 +1734,12 @@ class Dashboard:
         c = self.c
         st = read_status()
         self.kb_on = bool(st and st.get("keyboard_drive"))
+        if st and isinstance(st.get("key_map"), dict):
+            if st["key_map"] != self.keymap:
+                self.keymap = dict(st["key_map"])
+                self.kb_keys = set(core.key_axes(self.keymap))
+                self.kb_release_all()
+            self.kbd_name = st.get("keyboard_profile", "")
         ap = (st or {}).get("autopilot") or {}
         self.ap_enabled, self.ap_mode = bool(ap.get("enabled")), ap.get("mode")
         self.ap_epoch, self.ap_alert = ap.get("epoch", 0), ap.get("alert", "") if ap.get("enabled") else ""
@@ -1844,7 +1814,7 @@ class Dashboard:
                          else "AUTOPILOT ON" if self.ap_enabled else "")
             keys = st.get("keys") or []
             c.itemconfig(self.kb_badge, text=("KEYS: " + " ".join(k.upper() for k in keys)) if keys
-                         else "KEYBOARD DRIVE ON" if self.kb_on else "")
+                         else f"KEYS: {short(self.kbd_name, 16)}" if self.kb_on else "")
 
             motors = st["motors"]
             for i, (name, pct, bar) in enumerate(self.rows):

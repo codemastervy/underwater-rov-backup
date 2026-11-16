@@ -25,9 +25,9 @@ The dashboard with nothing plugged in (no Arduino, no controller), so everything
 |---|---|
 | ![Camera full screen](docs/screenshots/camera-full.png) | ![Camera select](docs/screenshots/camera-select.png) |
 
-| SETUP › EXTRAS | EDIT KEYS (keyboard drive profile) |
+| SETUP › EXTRAS | Keyboard profile (PROFILES page) |
 |---|---|
-| ![Extras page](docs/screenshots/extras.png) | ![Keyboard keys page](docs/screenshots/keys.png) |
+| ![Extras page](docs/screenshots/extras.png) | ![Keyboard profile](docs/screenshots/profiles-keys.png) |
 
 The camera shots use a made-up test picture (no capture card plugged in).
 
@@ -96,8 +96,9 @@ Open **ROV Backup** from the app menu (or `bash run.sh`). The controls are the s
 
 **Keyboard drive** (switch on in SETUP › EXTRAS): W/S forward/back, A/D turn, Space up, Shift down, R/F tilt,
 **Enter = ARM**, **Esc = STOP**. If the window closes or freezes, the keys count as released (and with no controller the
-motors disarm). **Change the keys:** SETUP › EXTRAS › **EDIT KEYS**: tap an action, press the key (only while SAFE);
-**WASD** and **ARROWS** presets. Saved in `keymap.json`.
+motors disarm). **Keyboard profiles:** on **SETUP › PROFILES** each profile is a **controller** (PAD) or **keyboard** (KEYS) profile:
+**+ CONTROLLER** / **+ KEYBOARD** makes one. In a keyboard profile tap an action, press the key; **SAVE + USE** to use it.
+**P** = next keyboard profile, TRIANGLE = next controller profile.
 
 **Arm sound:** when armed, the motors play **an FPV-drone style arming sound (5 s)** (no
 speaker: a tiny audio-frequency PWM makes the motors whistle). **Touch any control and it stops at once** so you can

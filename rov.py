@@ -19,7 +19,7 @@ Controls (default):
 
 Keyboard drive (switch it on on the case screen: SETUP > EXTRAS):
   W/S forward/back, A/D turn, Space up, Shift down, R/F tilt, Enter ARM, Esc STOP.
-  Which key does what can be changed: SETUP > EXTRAS > EDIT KEYS (saved in keymap.json).
+  Which key does what comes from the active KEYBOARD profile (SETUP > PROFILES; P = next keyboard profile).
   The dashboard sends the keys; if it stops sending for 0.5 s the keys count as released
   (and with no controller connected the motors disarm).
 
@@ -58,7 +58,7 @@ STATUS_PATH = "/dev/shm/rov-status.json"   # read by rov_gui.py
 CMD_PATH = "/dev/shm/rov-cmd"              # written by rov_gui.py
 KEYS_PATH = "/dev/shm/rov-keys.json"       # keyboard drive: keys held down, written by rov_gui.py
 
-# Keyboard drive profile: which key does what (SETUP > EXTRAS > EDIT KEYS, saved in keymap.json).
+# Keyboard drive: which key does what. Each KEYBOARD profile (SETUP > PROFILES, in profiles.json) has its own keys.
 # action, label, motion axis, amount (speed_up / speed_down are handled by the dashboard)
 KEY_ACTIONS = [("forward", "Forward", "surge", 1.0), ("back", "Back", "surge", -1.0),
                ("left", "Turn left", "yaw", -1.0), ("right", "Turn right", "yaw", 1.0),
@@ -201,6 +201,9 @@ DEFAULT_PROFILES = [
         "ly": {"action": "forward"}, "lx": {"action": "turn"}, "ry": {"action": "updown"},
         "r2": {"action": "updown"}, "l2": {"action": "updown", "invert": True},
         "dy": {"action": "tilt", "power": 0.6}}},
+    # keyboard profiles: which key does what for KEYBOARD DRIVE (P = next keyboard profile)
+    {"name": "Keys WASD", "type": "keyboard", "keys": KEY_PRESETS["WASD"]},
+    {"name": "Keys arrows", "type": "keyboard", "keys": KEY_PRESETS["ARROWS"]},
 ]
 
 
@@ -215,13 +218,43 @@ def clean_profiles(data):
     for p in (data or {}).get("profiles", []):
         if not isinstance(p, dict) or not str(p.get("name", "")).strip():
             continue
+        if p.get("type") == "keyboard":
+            raw = p.get("keys") if isinstance(p.get("keys"), dict) else {}
+            keys = {}
+            for a, *_ in KEY_ACTIONS:
+                k = raw.get(a)
+                keys[a] = k.lower() if isinstance(k, str) and k and k.lower() not in FIXED_KEYS else ""
+            out.append({"name": str(p["name"]).strip()[:24], "type": "keyboard", "keys": keys})
+            continue
         m = {}
         for k, v in (p.get("map") or {}).items():
             if k in INPUTS and isinstance(v, dict) and v.get("action") in ACTIONS:
                 m[k] = {"action": v["action"], "invert": bool(v.get("invert", False)),
                         "power": max(0.0, min(1.0, float(v.get("power", 1.0))))}
-        out.append({"name": str(p["name"]).strip()[:24], "map": m})
+        out.append({"name": str(p["name"]).strip()[:24], "type": "controller", "map": m})
     return out
+
+
+def complete_profiles(profs, config_path=None):
+    """Make sure there's at least one controller and one keyboard profile. Older setups get their
+    keyboard keys from keymap.json (the old EDIT KEYS page) as a keyboard profile."""
+    profs = list(profs)
+    defaults = clean_profiles({"profiles": DEFAULT_PROFILES})
+    if not any(p["type"] == "controller" for p in profs):
+        profs = [p for p in defaults if p["type"] == "controller"] + profs
+    if not any(p["type"] == "keyboard" for p in profs):
+        old = os.path.join(os.path.dirname(profiles_path(config_path)), "keymap.json")
+        if os.path.exists(old):
+            profs.append({"name": "My keys", "type": "keyboard", "keys": load_keymap(old)})
+        profs += [p for p in defaults if p["type"] == "keyboard"]
+    names = set()
+    for p in profs:                      # names must be unique
+        base, n = p["name"], 2
+        while p["name"] in names:
+            p["name"] = f"{base[:20]} {n}"
+            n += 1
+        names.add(p["name"])
+    return profs
 
 
 # --------------------------------------------------------------------------- GPIO
@@ -953,10 +986,6 @@ class ROV:
         self.kbd_enabled = bool(c.get("keyboard_drive", False))
         self.kbd_keys = set()
         self.kbd_live = False
-        self.keymap_path = os.path.join(os.path.dirname(os.path.abspath(config_path or
-                                                                        os.path.join(HERE, "config.toml"))),
-                                        "keymap.json")
-        self.key_axes = key_axes(load_keymap(self.keymap_path))
         self.sound_on = bool(c.get("arm_sound", True))
         self.sound_volume = max(1, min(15, int(c.get("sound_volume", 5))))
         self.tune = None
@@ -1064,7 +1093,7 @@ class ROV:
                 self.change_speed(-1)
 
     # ---- profiles ----
-    def load_profiles(self, active=None):
+    def load_profiles(self, active=None, kbd_active=None):
         """Load profiles.json (creating it with the defaults if missing). `active` = name or 1-based number."""
         path = profiles_path(self.config_path)
         profs = None
@@ -1079,42 +1108,70 @@ class ROV:
                 pass
         except (OSError, ValueError) as ex:
             log.error(f"profiles.json unreadable ({ex}) - using built-in profiles")
-        self.profiles = profs or clean_profiles({"profiles": DEFAULT_PROFILES})
-        names = [p["name"] for p in self.profiles]
+        self.profiles = complete_profiles(profs or [], self.config_path)
+        ctrl = self.type_idxs("controller")
+        names = [self.profiles[i]["name"] for i in ctrl]
         if isinstance(active, int) and 1 <= active <= len(names):
-            self.profile_idx = active - 1
+            self.profile_idx = ctrl[active - 1]
         elif active in names:
-            self.profile_idx = names.index(active)
+            self.profile_idx = ctrl[names.index(active)]
         else:
-            self.profile_idx = names.index("Standard") if "Standard" in names else 0
+            self.profile_idx = ctrl[names.index("Standard")] if "Standard" in names else ctrl[0]
+        kbd = self.type_idxs("keyboard")
+        knames = [self.profiles[i]["name"] for i in kbd]
+        if kbd_active is None:
+            kbd_active = self.cfg.get("control", {}).get("keyboard_profile")
+        self.kbd_profile_idx = kbd[knames.index(kbd_active)] if kbd_active in knames else kbd[0]
+        self.key_axes = key_axes(self.kbd_profile()["keys"])
+
+    def type_idxs(self, kind):
+        return [i for i, p in enumerate(self.profiles) if p["type"] == kind]
 
     def active_profile(self):
+        """The controller profile in use."""
         return self.profiles[self.profile_idx]
 
+    def kbd_profile(self):
+        """The keyboard profile in use (KEYBOARD DRIVE keys)."""
+        return self.profiles[self.kbd_profile_idx]
+
     def set_profile(self, idx):
-        self.profile_idx = idx % len(self.profiles)
+        if self.profiles[idx]["type"] == "keyboard":
+            return self.set_kbd_profile(idx)
+        self.profile_idx = idx
+        ctrl = self.type_idxs("controller")
         name = self.active_profile()["name"]
         saved = self.save_setting("drive_profile", json.dumps(name), section="[control]")
-        self.say(f"Drive profile {self.profile_idx + 1}/{len(self.profiles)}: {name}"
+        self.say(f"Controller profile {ctrl.index(idx) + 1}/{len(ctrl)}: {name}"
                  + ("" if saved else " (could not save!)"))
 
-    def switch_profile(self):
-        """TRIANGLE / screen button: next profile (only while SAFE)."""
+    def set_kbd_profile(self, idx):
+        self.kbd_profile_idx = idx
+        self.key_axes = key_axes(self.kbd_profile()["keys"])
+        kbd = self.type_idxs("keyboard")
+        name = self.kbd_profile()["name"]
+        saved = self.save_setting("keyboard_profile", json.dumps(name), section="[control]")
+        self.say(f"Keyboard profile {kbd.index(idx) + 1}/{len(kbd)}: {name}" + ("" if saved else " (could not save!)"))
+
+    def switch_profile(self, kind="controller"):
+        """TRIANGLE / screen button: next controller profile. P key: next keyboard profile. Only while SAFE."""
         if self.armed:
-            self.say("Disarm first (STOP) to change drive profile")
+            self.say("Disarm first (STOP) to change profile")
             return
-        self.set_profile(self.profile_idx + 1)
+        ids = self.type_idxs(kind)
+        cur = self.profile_idx if kind == "controller" else self.kbd_profile_idx
+        self.set_profile(ids[(ids.index(cur) + 1) % len(ids)] if cur in ids else ids[0])
 
     def reload_profiles(self, use_idx):
         """The screen editor saved profiles.json. use_idx >= 0 also makes that profile active."""
         if self.armed:
             self.disarm("profiles changed")
-        current = self.active_profile()["name"]
-        self.load_profiles(current)
+        self.load_profiles(self.active_profile()["name"], self.kbd_profile()["name"])
         if 0 <= use_idx < len(self.profiles):
             self.set_profile(use_idx)
         else:
-            self.say(f"Profiles saved ({len(self.profiles)}). Active: {self.active_profile()['name']}")
+            self.say(f"Profiles saved. Using: {self.active_profile()['name']} (controller), "
+                     f"{self.kbd_profile()['name']} (keyboard)")
 
     def save_setting(self, key, value, section):
         """Set `key = value` in config.toml (first match, else add under `section`)."""
@@ -1388,8 +1445,10 @@ class ROV:
             "controller": self.pad.name if self.pad else None,
             "heartbeat": bool(self.pad and self.pad.motion),
             "speed": int(self.levels[self.level] * 100),
-            "profile": self.profile_idx + 1,
-            "profile_count": len(self.profiles),
+            "profile": self.type_idxs("controller").index(self.profile_idx) + 1,
+            "profile_count": len(self.type_idxs("controller")),
+            "keyboard_profile": self.kbd_profile()["name"],
+            "key_map": self.kbd_profile()["keys"],
             "profile_name": self.active_profile()["name"],
             "profile_map": self.active_profile()["map"],
             "view_toggle": self.view_toggle,
@@ -1442,9 +1501,8 @@ class ROV:
         elif cmd == "kbd_arm":
             self.read_keys()
             self.arm(source="keyboard")
-        elif cmd == "reload_keys":
-            self.key_axes = key_axes(load_keymap(self.keymap_path))
-            self.say("Keyboard keys updated")
+        elif cmd == "kbd_profile":
+            self.switch_profile("keyboard")
         elif cmd.startswith("keyboard:"):
             self.set_keyboard(cmd.endswith(":1"))
         elif cmd.startswith("sound:"):
