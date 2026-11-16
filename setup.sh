@@ -48,20 +48,37 @@ chmod +x "$DIR"/*.sh
 echo "==> Installing packages and permissions (asks for your password)"
 ROV_FROM_SETUP=1 bash "$DIR/install.sh"
 
-# Firmware: upload when a Mega is plugged in and the sketch is new/changed
+# Firmware: upload when a Mega is plugged in and it isn't running the current ROV firmware
+# (asks the board itself: an Arduino without the ROV firmware doesn't answer PING)
+cat > "$TMP/mega-ping.py" <<'PY'
+import sys, time, serial
+try:
+    s = serial.Serial(sys.argv[1], 115200, timeout=0.2)
+except Exception:
+    sys.exit(1)
+time.sleep(2.5)                       # the Mega restarts when the port opens
+s.reset_input_buffer()
+for _ in range(3):
+    s.write(b"PING\n")
+    t = time.time()
+    while time.time() - t < 0.6:
+        if b"PONG" in s.readline():
+            sys.exit(0)
+sys.exit(1)
+PY
 PORT="$(ls /dev/ttyACM* /dev/ttyUSB* 2>/dev/null | head -1 || true)"
 SUM="$(sha256sum "$DIR/rov_mega/rov_mega.ino" | cut -d' ' -f1)"
 if [ -n "$PORT" ]; then
-  if [ "$(cat "$DIR/.mega-firmware" 2>/dev/null)" != "$SUM" ]; then
-    echo "==> Uploading the firmware to the Arduino Mega on $PORT"
+  if [ "$(cat "$DIR/.mega-firmware" 2>/dev/null)" = "$SUM" ] && sg uucp -c "python3 '$TMP/mega-ping.py' '$PORT'" 2>/dev/null; then
+    echo "==> Arduino Mega on $PORT already has the current ROV firmware"
+  else
+    echo "==> Uploading the ROV firmware to the Arduino Mega on $PORT (about 30 s)"
     # 'sg uucp' gives serial-port access now, before you've logged out and in
     if sg uucp -c "bash '$DIR/upload-mega.sh' '$PORT'"; then
       echo "$SUM" > "$DIR/.mega-firmware"
     else
-      echo "!! Firmware upload failed. Try again later with:  bash $DIR/upload-mega.sh"
+      echo "!! Firmware upload failed. Try again with:  bash $DIR/upload-mega.sh"
     fi
-  else
-    echo "==> Arduino Mega firmware already up to date"
   fi
 else
   echo "==> No Arduino Mega plugged in: plug it in and run this command again to upload the firmware"
