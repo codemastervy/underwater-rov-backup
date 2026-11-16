@@ -259,6 +259,8 @@ class MegaBackend:
         self.last_rx = 0.0
         self.next_try = 0.0
         self.rx = b""
+        self.next_ping = 0.0
+        self.no_answer = None     # port that was open but never answered (firmware missing?)
         self.desc = "Arduino Mega not found - plug in its USB cable"
 
     # -- same interface as the GPIO backends --
@@ -314,7 +316,12 @@ class MegaBackend:
             self.opened_at = time.monotonic()
             self.last_rx = 0.0
             self.rx = b""
-            self.desc = f"Mega on {port}: starting up..."
+            self.next_ping = self.opened_at + 2.0   # the Mega restarts when the port opens: give it 2 s
+            if self.no_answer == port:              # keep the real problem on screen while retrying
+                self.desc = (f"No answer from the Arduino on {port}: upload the ROV firmware "
+                             f"(close the app, run bash upload-mega.sh)")
+            else:
+                self.desc = f"Mega on {port}: starting up..."
             log.info(f"Opened {port}")
         except (OSError, self.serial.SerialException) as ex:
             self.ser = None
@@ -346,6 +353,11 @@ class MegaBackend:
             # (it resets when the port opens) can delay start-up.
             if self.last_rx:
                 self.ser.write(frame.encode())
+            elif time.monotonic() >= self.next_ping:
+                # no hello yet (some clones don't restart when the port opens, so "READY" never comes):
+                # ask - the ROV firmware answers PONG
+                self.next_ping = time.monotonic() + 1.0
+                self.ser.write(b"PING\n")
         except self.serial.SerialTimeoutException:
             data = b""                            # USB busy: skip this frame, the next one follows in 20 ms
         except (OSError, self.serial.SerialException) as ex:
@@ -358,14 +370,18 @@ class MegaBackend:
                 text = line.decode(errors="replace").strip()
                 if text in ("OK", "ROV-MEGA READY", "PONG", "TIMEOUT"):
                     self.last_rx = time.monotonic()
+                    self.no_answer = None
                     self.desc = f"Mega OK on {self.port}"
                 elif text.startswith("ERR"):
                     log.warning(f"Mega: {text}")
         if self.last_rx and time.monotonic() - self.last_rx > 1.5:
             self.drop("no reply for 1.5 s")
-        elif not self.last_rx and time.monotonic() - self.opened_at > 6.0:
+        elif not self.last_rx and time.monotonic() - self.opened_at > 8.0:
+            port = self.port
             self.drop("no answer - is rov_mega.ino uploaded to the Mega?")
-            self.desc = f"No answer from {self.port} - upload rov_mega.ino to the Mega"
+            self.no_answer = port
+            self.desc = (f"No answer from the Arduino on {port}: upload the ROV firmware "
+                         f"(close the app, run bash upload-mega.sh)")
 
     def ready(self):
         return self.ser is not None and self.last_rx and time.monotonic() - self.last_rx < 1.5
