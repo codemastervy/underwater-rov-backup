@@ -181,11 +181,13 @@ FLIP_TEXT = {"none": "", "rotate": "UPSIDE DOWN", "mirror": "MIRRORED"}
 # Picture adjustments (done in ffmpeg, so they work with any capture card):
 # key, label, min, max, step, default, how to show the value
 PICTURE = [
-    ("gain", "GAIN (ISO)", 0.25, 4.0, 0.25, 1.0, lambda v: f"x{v:.2f}"),
+    ("gain", "ISO", 0.25, 4.0, 0.25, 1.0, lambda v: f"{v * 100:.0f}"),      # ISO 100 = normal
     ("brightness", "BRIGHTNESS", -0.5, 0.5, 0.05, 0.0, lambda v: f"{round(v * 20):+d}"),
     ("contrast", "CONTRAST", 0.5, 2.0, 0.1, 1.0, lambda v: f"x{v:.1f}"),
     ("saturation", "COLOUR", 0.0, 3.0, 0.1, 1.0, lambda v: f"x{v:.1f}"),
-    ("warmth", "WARMTH", -1.0, 1.0, 0.1, 0.0, lambda v: f"{round(v * 10):+d}"),
+    ("red", "RED", 0.0, 2.0, 0.05, 1.0, lambda v: f"{v * 100:.0f}%"),
+    ("green", "GREEN", 0.0, 2.0, 0.05, 1.0, lambda v: f"{v * 100:.0f}%"),
+    ("blue", "BLUE", 0.0, 2.0, 0.05, 1.0, lambda v: f"{v * 100:.0f}%"),
 ]
 PICTURE_DEFAULT = {k: d for k, _, _, _, _, d, _ in PICTURE}
 
@@ -194,10 +196,12 @@ def picture_filters(adj):
     """ffmpeg filters for the picture settings (none when everything is at default)."""
     a = dict(PICTURE_DEFAULT, **adj)
     out = []
-    g, w = a["gain"], a["warmth"]
-    if abs(g - 1) > 1e-6 or abs(w) > 1e-6:
-        # gain = brighter sensor (like ISO); warmth = more red / less blue (water makes things blue-green)
-        out.append(f"colorchannelmixer=rr={g * (1 + 0.35 * w):.3f}:gg={g:.3f}:bb={g * (1 - 0.35 * w):.3f}")
+    g = a["gain"]
+    r, gr, b = g * a["red"], g * a["green"], g * a["blue"]
+    if any(abs(v - 1) > 1e-6 for v in (r, gr, b)):
+        # ISO = brighter picture (all colours); RED/GREEN/BLUE = each colour on its own
+        # (water makes things blue-green: try more RED, less BLUE)
+        out.append(f"colorchannelmixer=rr={r:.3f}:gg={gr:.3f}:bb={b:.3f}")
     if abs(a["brightness"]) > 1e-6 or abs(a["contrast"] - 1) > 1e-6 or abs(a["saturation"] - 1) > 1e-6:
         out.append(f"eq=brightness={a['brightness']:.2f}:contrast={a['contrast']:.2f}"
                    f":saturation={a['saturation']:.2f}")
@@ -218,6 +222,13 @@ def load_camera_settings():
     if not isinstance(data, dict):
         data = {}
     flip = data.get("flip", "none")
+    pic = data.get("picture")
+    if isinstance(pic, dict) and "warmth" in pic and "red" not in pic:    # older setting: WARMTH -> RED/BLUE
+        try:
+            w = float(pic["warmth"])
+            pic.update(red=round(1 + 0.35 * w, 2), blue=round(1 - 0.35 * w, 2))
+        except (TypeError, ValueError):
+            pass
     adj = {}
     for k, _, lo, hi, _, d, _ in PICTURE:
         try:
@@ -1268,23 +1279,39 @@ class Dashboard:
         self.cprofile = c.create_text(624, 96, anchor="w", text="", font=fnt(11), fill=DIM)
         self.cbars = []
         for i in range(4):
-            y = 118 + i * 44
+            y = 110 + i * 40
             name = c.create_text(624, y + 8, anchor="w", text="", font=fnt(10), fill=FG)
             c.create_rectangle(624, y + 20, 788, y + 34, fill=TRACK, width=0)
             bar = c.create_rectangle(706, y + 20, 706, y + 34, fill=GREEN, width=0)
             c.create_line(706, y + 17, 706, y + 37, fill=DIM)
             self.cbars.append((name, bar))
-        self.small_button(c, 620, 294, 702, 334, "◀ BACK", self.show_main, tag="cam_back")
-        self.small_button(c, 710, 294, 792, 334, "FLIP ↻", self.flip_camera, tag="cam_flip")
-        self.small_button(c, 620, 340, 702, 378, "PICTURE", self.toggle_picture, tag="cam_pic")
-        self.pick_btn = self.small_button(c, 710, 340, 792, 378, "PICK", self.toggle_pick, tag="cam_pick")
+        self.small_button(c, 620, 272, 702, 306, "◀ BACK", self.show_main, tag="cam_back")
+        self.small_button(c, 710, 272, 792, 306, "FLIP ↻", self.flip_camera, tag="cam_flip")
+        self.small_button(c, 620, 312, 702, 346, "PICTURE", self.toggle_picture, tag="cam_pic")
+        self.pick_btn = self.small_button(c, 710, 312, 792, 346, "PICK", self.toggle_pick, tag="cam_pick")
+        self.small_button(c, 620, 352, 792, 386, "⛶ FULL SCREEN", self.toggle_full, tag="cam_full")
         c.bind("<Button-1>", self.cam_click, add="+")
         self.flip_label = c.create_text(10, 14, anchor="w", text="", font=fnt(11, "bold"), fill=AMBER)
-        c.create_rectangle(620, 386, 792, 470, fill=RED, outline=TRACK, width=2, tags="cam_stop")
-        c.create_text(706, 420, text="STOP", font=fnt(24, "bold"), fill="white", tags="cam_stop")
-        c.create_text(706, 454, text="(Esc)", font=fnt(10), fill="#f0f0f0", tags="cam_stop")
+        c.create_rectangle(620, 394, 792, 470, fill=RED, outline=TRACK, width=2, tags="cam_stop")
+        c.create_text(706, 424, text="STOP", font=fnt(24, "bold"), fill="white", tags="cam_stop")
+        c.create_text(706, 456, text="(Esc)", font=fnt(10), fill="#f0f0f0", tags="cam_stop")
         c.tag_bind("cam_stop", "<Button-1>", lambda e: send("stop"))
         self.cmsg = c.create_text(8, 465, anchor="w", text="", font=fnt(11), fill=FG)
+        c.addtag_overlapping("side", 607, 0, 800, 480)       # the sidebar: hidden in full screen
+        c.addtag_withtag("side", self.cmsg)
+        # full screen: 4:3 video in the middle (80..720), these controls in the black bars at the sides
+        self.fbadge = c.create_rectangle(724, 6, 796, 56, fill=RED, width=0, tags="fs")
+        self.fbadge_txt = c.create_text(760, 31, text="SAFE", font=fnt(12, "bold"), fill="white", tags="fs")
+        self.fspeed = c.create_text(760, 76, text="", font=fnt(11, "bold"), fill=FG, tags="fs")
+        c.create_rectangle(724, 330, 796, 474, fill=RED, outline=TRACK, width=2, tags=("fs", "fs_stop"))
+        c.create_text(760, 392, text="STOP", font=fnt(15, "bold"), fill="white", tags=("fs", "fs_stop"))
+        c.create_text(760, 420, text="(Esc)", font=fnt(9), fill="#f0f0f0", tags=("fs", "fs_stop"))
+        c.tag_bind("fs_stop", "<Button-1>", lambda e: send("stop"))
+        c.create_rectangle(4, 6, 76, 120, fill=PANEL, outline=DIM, width=2, tags=("fs", "fs_exit"))
+        c.create_text(40, 46, text="⛶", font=fnt(22, "bold"), fill=FG, tags=("fs", "fs_exit"))
+        c.create_text(40, 90, text="EXIT", font=fnt(11, "bold"), fill=FG, tags=("fs", "fs_exit"))
+        c.tag_bind("fs_exit", "<Button-1>", lambda e: self.toggle_full())
+        self.full = False
         self.build_picture_panel(c)
         self.picking = False
         c.scale("all", 0, 0, SX, SY)
@@ -1306,25 +1333,26 @@ class Dashboard:
         c.tag_raise("pic")
         c.itemconfig("pic", state="hidden")
         c.itemconfig(self.flip_label, text=FLIP_TEXT[self.cam_flip])
+        c.itemconfig("fs", state="hidden")
         self.shown_frame = 0
 
     # picture adjustments panel (over the left of the video)
     def build_picture_panel(self, c):
-        c.create_rectangle(6, 30, 306, 314, fill=PANEL, outline=DIM, width=2, tags="pic")
+        c.create_rectangle(6, 30, 306, 352, fill=PANEL, outline=DIM, width=2, tags="pic")
         self.pic_vals = {}
         for i, (k, label, *_rest) in enumerate(PICTURE):
-            y = 40 + i * 44
-            c.create_text(16, y + 18, anchor="w", text=label, font=fnt(11, "bold"), fill=FG, tags="pic")
+            y = 38 + i * 38
+            c.create_text(16, y + 16, anchor="w", text=label, font=fnt(11, "bold"), fill=FG, tags="pic")
             for x0, sym, d in ((150, "−", -1), (258, "+", 1)):
                 t = f"pic_{k}_{'up' if d > 0 else 'dn'}"
-                c.create_rectangle(x0, y, x0 + 40, y + 36, fill=BG, outline=DIM, width=2, tags=("pic", t))
-                c.create_text(x0 + 20, y + 18, text=sym, font=fnt(15, "bold"), fill=FG, tags=("pic", t))
+                c.create_rectangle(x0, y, x0 + 40, y + 32, fill=BG, outline=DIM, width=2, tags=("pic", t))
+                c.create_text(x0 + 20, y + 16, text=sym, font=fnt(15, "bold"), fill=FG, tags=("pic", t))
                 c.tag_bind(t, "<Button-1>", lambda e, k=k, d=d: self.adjust_picture(k, d))
-            self.pic_vals[k] = c.create_text(224, y + 18, text="", font=fnt(12, "bold"), fill=FG, tags="pic")
+            self.pic_vals[k] = c.create_text(224, y + 16, text="", font=fnt(12, "bold"), fill=FG, tags="pic")
         for x0, x1, t, label, fn in ((14, 152, "pic_reset", "RESET", self.reset_picture),
                                      (160, 298, "pic_close", "CLOSE", self.toggle_picture)):
-            c.create_rectangle(x0, 266, x1, 304, fill=BG, outline=DIM, width=2, tags=("pic", t))
-            c.create_text((x0 + x1) / 2, 285, text=label, font=fnt(12, "bold"), fill=FG, tags=("pic", t))
+            c.create_rectangle(x0, 308, x1, 344, fill=BG, outline=DIM, width=2, tags=("pic", t))
+            c.create_text((x0 + x1) / 2, 326, text=label, font=fnt(12, "bold"), fill=FG, tags=("pic", t))
             c.tag_bind(t, "<Button-1>", lambda e, fn=fn: fn())
         self.pic_open = False
         self.show_picture_values(c)
@@ -1377,7 +1405,31 @@ class Dashboard:
         self.c3.itemconfig(self.pick_msg, text="■ TARGET COLOUR PICKED", fill=rgb if pick[2] > 0.3 else AMBER)
         self.root.after(4000, lambda: self.picking or self.c3.itemconfig(self.pick_msg, text="", fill=AMBER))
 
+    def toggle_full(self):
+        """FULL SCREEN: the video fills the screen (4:3, side bars keep STOP and ARMED/SAFE)."""
+        c = self.c3
+        self.full = not self.full
+        if self.full and self.pic_open:
+            self.toggle_picture()
+        box = (80, 0, 720, 480) if self.full else (0, 0, 600, 450)
+        x0, y0, x1, y1 = X(box[0]), Y(box[1]), X(box[2]), Y(box[3])
+        c.coords(self.video_box, x0, y0, x1, y1)
+        c.coords(self.video_item, x0, y0)
+        c.coords(self.no_signal, (x0 + x1) / 2, (y0 + y1) / 2)
+        c.coords(self.flip_label, x0 + 10 * SX, y0 + 14 * SY)
+        c.coords(self.ov_text, x0 + 8 * SX, y0 + 40 * SY)
+        c.coords(self.cam_alert_rect, x0, y1 - 40 * SY, x1, y1)
+        c.coords(self.cam_alert, (x0 + x1) / 2, y1 - 20 * SY)
+        c.coords(self.pick_msg, (x0 + x1) / 2, y1 - 60 * SY)
+        c.itemconfig("side", state="hidden" if self.full else "normal")
+        c.itemconfig("fs", state="normal" if self.full else "hidden")
+        self.video_img.blank()
+        if self.cam.alive():
+            self.camera_policy(restart=True)       # new picture size
+
     def toggle_picture(self):
+        if self.full:
+            return
         if not self.pic_open and getattr(self, "picking", False):
             self.toggle_pick()
         self.pic_open = not self.pic_open
@@ -1462,10 +1514,15 @@ class Dashboard:
         if st is None:
             c.itemconfig(self.cbadge, fill=AMBER)
             c.itemconfig(self.cbadge_txt, text="OFFLINE")
+            c.itemconfig(self.fbadge, fill=AMBER)
+            c.itemconfig(self.fbadge_txt, text="OFFLINE")
             return
         armed = st["armed"]
         c.itemconfig(self.cbadge, fill=GREEN if armed else RED)
         c.itemconfig(self.cbadge_txt, text="ARMED" if armed else "SAFE")
+        c.itemconfig(self.fbadge, fill=GREEN if armed else RED)
+        c.itemconfig(self.fbadge_txt, text="ARMED" if armed else "SAFE")
+        c.itemconfig(self.fspeed, text=f"{st['speed']}%")
         c.itemconfig(self.cspeed, text=f"Speed {st['speed']}%")
         c.itemconfig(self.cprofile, text=short(f"Profile: {st.get('profile_name', '')}", 24))
         for (name, bar), m in zip(self.cbars, st["motors"]):

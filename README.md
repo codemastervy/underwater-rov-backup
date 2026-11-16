@@ -17,9 +17,15 @@ The dashboard with nothing plugged in (no Arduino, no controller), so everything
 |---|---|
 | ![Main page](docs/screenshots/main.png) | ![Profiles page](docs/screenshots/profiles.png) |
 
-| Setup |
+| Setup | Camera + PICTURE (ISO, RGB) |
+|---|---|
+| ![Setup page](docs/screenshots/setup.png) | ![Camera page](docs/screenshots/camera.png) |
+
+| Camera full screen |
 |---|
-| ![Setup page](docs/screenshots/setup.png) |
+| ![Camera full screen](docs/screenshots/camera-full.png) |
+
+The camera shots use a made-up test picture (no capture card plugged in).
 
 ## Files
 | File | What it is |
@@ -98,7 +104,10 @@ following (pick the colour by clicking the object: camera page › PICK), camera
 Any stick/key movement or STOP takes over. Green status bar = working; flashing red **TAKE CONTROL NOW** = unsure
 (it hovers, then switches off after 3 s). Same as the Pi version: see the Pi repo's README for details.
 
-**Camera picture:** CAMERA › PICTURE adjusts gain (ISO), brightness, contrast, colour and warmth (saved).
+**Camera picture:** CAMERA › PICTURE adjusts **ISO** (100 = normal, up to 400 for dark water), brightness, contrast,
+colour (saturation) and **RED / GREEN / BLUE** on their own (water makes things blue-green: try more RED, less BLUE).
+Saved in `camera.json`. **⛶ FULL SCREEN** makes the video fill the window; STOP and ARMED/SAFE stay at the side,
+**EXIT** goes back.
 
 `bash run.sh --fullscreen` for full screen, `--size 1600x960` for a bigger window.
 
