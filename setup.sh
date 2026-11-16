@@ -14,7 +14,7 @@ set -euo pipefail
 REPO="codemastervy/underwater-rov-backup"
 BRANCH="${ROV_BRANCH:-main}"
 DIR="$HOME/underwater-rov-backup"
-KEEP=(config.toml profiles.json camera.json autopilot.json mission.json tune.txt)
+KEEP=(config.toml profiles.json camera.json autopilot.json mission.json tune.txt keymap.json)
 
 if [ "$(id -u)" -eq 0 ]; then
   echo "Run this as your normal user (not with sudo). It asks for your password when it needs it."

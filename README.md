@@ -21,9 +21,13 @@ The dashboard with nothing plugged in (no Arduino, no controller), so everything
 |---|---|
 | ![Setup page](docs/screenshots/setup.png) | ![Camera page](docs/screenshots/camera.png) |
 
-| Camera full screen |
-|---|
-| ![Camera full screen](docs/screenshots/camera-full.png) |
+| Camera full screen | CAMERA ▸ (pick the camera) |
+|---|---|
+| ![Camera full screen](docs/screenshots/camera-full.png) | ![Camera select](docs/screenshots/camera-select.png) |
+
+| SETUP › EXTRAS | EDIT KEYS (keyboard drive profile) |
+|---|---|
+| ![Extras page](docs/screenshots/extras.png) | ![Keyboard keys page](docs/screenshots/keys.png) |
 
 The camera shots use a made-up test picture (no capture card plugged in).
 
@@ -92,7 +96,8 @@ Open **ROV Backup** from the app menu (or `bash run.sh`). The controls are the s
 
 **Keyboard drive** (switch on in SETUP › EXTRAS): W/S forward/back, A/D turn, Space up, Shift down, R/F tilt,
 **Enter = ARM**, **Esc = STOP**. If the window closes or freezes, the keys count as released (and with no controller the
-motors disarm).
+motors disarm). **Change the keys:** SETUP › EXTRAS › **EDIT KEYS**: tap an action, press the key (only while SAFE);
+**WASD** and **ARROWS** presets. Saved in `keymap.json`.
 
 **Arm sound:** when armed, the motors play **an FPV-drone style arming sound (5 s)** (no
 speaker: a tiny audio-frequency PWM makes the motors whistle). **Touch any control and it stops at once** so you can
@@ -112,7 +117,9 @@ Saved in `camera.json`. **⛶ FULL SCREEN** makes the video fill the window; STO
 `bash run.sh --fullscreen` for full screen, `--size 1600x960` for a bigger window.
 
 **Camera:** plug the capture card into the laptop. It's picked automatically (the laptop's own webcam is skipped).
-If the wrong camera shows, set `device = "/dev/video2"` (etc.) under `[camera]` in `config.toml`.
+Wrong camera? Tap **CAMERA ▸** on the camera page: it steps through every camera the laptop can see and shows its
+name; the choice is remembered (`camera.json`). (`device = "/dev/video2"` under `[camera]` in `config.toml` still
+forces one and turns the button off.)
 
 ## Safety
 - Won't arm until the Mega has answered ("⚠ Arduino Mega not found" is shown otherwise).

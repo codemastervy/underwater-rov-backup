@@ -30,7 +30,22 @@ STATUS = "/dev/shm/rov-status.json"
 CMD = "/dev/shm/rov-cmd"
 KEYS = "/dev/shm/rov-keys.json"
 VISION = "/dev/shm/rov-vision.json"
-KB_KEYS = {"w", "a", "s", "d", "r", "f", "space", "shift"}
+KEY_NAMES = {"space": "Space", "shift": "Shift", "ctrl": "Ctrl", "alt": "Alt", "up": "↑", "down": "↓", "left": "←",
+             "right": "→", "prior": "PgUp", "next": "PgDn", "equal": "=", "minus": "−", "plus": "+", "comma": ",",
+             "period": ".", "slash": "/", "semicolon": ";", "apostrophe": "'", "bracketleft": "[",
+             "bracketright": "]", "backslash": "\\", "grave": "`", "tab": "Tab", "backspace": "Bksp", "home": "Home",
+             "end": "End", "insert": "Ins", "delete": "Del", "caps_lock": "Caps", "super": "Win"}
+
+
+def key_label(k):
+    """Tk key name -> what's printed on the key."""
+    if not k:
+        return "—"
+    return KEY_NAMES.get(k, k.upper() if len(k) == 1 else k.replace("kp_", "Num ").title())
+
+
+def keymap_path():
+    return os.path.join(core.HERE, "keymap.json")
 W, H = 800, 480
 # Safe area: this monitor crops the edges of the HDMI picture. Increase these if
 # anything is still cut off (left, top, right, bottom, in pixels). Or run with
@@ -138,12 +153,8 @@ def camera_setting():
         return "auto"
 
 
-def find_camera():
-    """The USB capture card. On a laptop, skip the built-in webcam unless it's the only camera.
-    Set [camera] device = "/dev/videoN" in config.toml to force one."""
-    setting = camera_setting()
-    if setting != "auto":
-        return setting
+def list_cameras():
+    """[(device, name)] of the video capture devices (one entry per camera)."""
     found = []
     for path in sorted(glob.glob("/sys/class/video4linux/video*"), key=lambda p: int(p.rsplit("video", 1)[1])):
         try:
@@ -152,7 +163,30 @@ def find_camera():
         except (OSError, ValueError):
             continue
         if idx == 0 and not name.startswith(("bcm2835", "rpi-")):
-            found.append(("/dev/" + os.path.basename(path), name.lower()))
+            found.append(("/dev/" + os.path.basename(path), name))
+    return found
+
+
+def chosen_camera():
+    """Camera picked with the CAMERA button on the camera page (saved in camera.json), or None."""
+    try:
+        with open(camera_flip_path()) as f:
+            dev = json.load(f).get("device")
+        return dev if isinstance(dev, str) and dev else None
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def find_camera():
+    """The camera to show: [camera] device in config.toml if set, else the one picked with the CAMERA button,
+    else the USB capture card (skipping the laptop's built-in webcam unless it's the only camera)."""
+    setting = camera_setting()
+    if setting != "auto":
+        return setting
+    found = [(dev, name.lower()) for dev, name in list_cameras()]
+    picked = chosen_camera()
+    if picked and any(dev == picked for dev, _ in found):
+        return picked
     builtin = ("integrated", "webcam", "hd camera", "hd user facing", "facetime", "chicony", "ir camera")
     for dev, name in found:
         if "pc camera" in name or "capture" in name or "av to usb" in name:
@@ -238,10 +272,15 @@ def load_camera_settings():
     return (flip if flip in FLIP_ORDER else "none"), adj
 
 
-def save_camera_settings(flip, adj):
+def save_camera_settings(flip, adj, device=False):
+    """Save flip + picture (and the picked camera when device is given; otherwise keep the saved one)."""
+    data = {"flip": flip, "picture": adj}
+    dev = chosen_camera() if device is False else device
+    if dev:
+        data["device"] = dev
     try:
         with open(camera_flip_path() + ".tmp", "w") as f:
-            json.dump({"flip": flip, "picture": adj}, f)
+            json.dump(data, f)
         os.replace(camera_flip_path() + ".tmp", camera_flip_path())
     except OSError:
         pass
@@ -251,6 +290,7 @@ class CameraFeed:
     """ffmpeg reads the capture card (MJPEG) and pipes raw PPM frames; Tk shows the newest one."""
 
     def __init__(self):
+        self.dev = None
         self.proc = None
         self.frame = None
         self.frame_no = 0
@@ -259,7 +299,7 @@ class CameraFeed:
 
     def start(self, w, h, flip="none", picture=None):
         self.stop()
-        dev = find_camera()
+        dev = self.dev = find_camera()
         if not dev:
             self.error = "No camera / capture card found"
             return
@@ -327,6 +367,9 @@ class Dashboard:
         self.kb_on = False          # KEYBOARD DRIVE switch (comes from rov.py status)
         self.kb_down = set()
         self.kb_jobs = {}
+        self.keymap = core.load_keymap(keymap_path())     # keyboard drive profile: action -> key
+        self.kb_keys = set(core.key_axes(self.keymap))
+        self.key_listen = None                           # action waiting for "press a key" (keys page)
         self.page = "main"
         self.last_view_toggle = None
         self.cam = CameraFeed()
@@ -414,6 +457,7 @@ class Dashboard:
         self.build_extras()
         self.build_autopilot()
         self.build_mission()
+        self.build_keys()
         self.build_camera()
         self.update()
         self.refresh_video()
@@ -433,7 +477,10 @@ class Dashboard:
     @staticmethod
     def kb_name(event):
         k = event.keysym.lower()
-        return "shift" if k in ("shift_l", "shift_r") else k
+        for side in ("_l", "_r"):
+            if k.endswith(side) and k[:-2] in ("shift", "control", "alt", "super", "meta"):
+                k = k[:-2]
+        return {"control": "ctrl"}.get(k, k)
 
     def typing(self):
         try:
@@ -447,18 +494,28 @@ class Dashboard:
             self.press("stop")
             if self.typing():
                 self.root.focus_set()
+            if self.key_listen:
+                self.key_listen = None
+                self.keys_render()
+            return
+        if self.key_listen:        # keys page: this key becomes the new key for that action
+            self.key_bind(k)
             return
         if self.typing():
             return
         if k == "f11":
             self.root.attributes("-fullscreen", not self.root.attributes("-fullscreen"))
-        elif self.kb_on and k in KB_KEYS:
+        elif self.kb_on and k in self.kb_keys:
             job = self.kb_jobs.pop(k, None)
             if job:
                 self.root.after_cancel(job)
             self.kb_down.add(k)
         elif self.kb_on and k in ("return", "kp_enter"):
             send("kbd_arm")
+        elif self.kb_on and k == self.keymap.get("speed_up"):
+            self.press("speed+")
+        elif self.kb_on and k == self.keymap.get("speed_down"):
+            self.press("speed-")
         elif k == "space":
             self.press("stop")
         elif k in ("plus", "equal", "kp_add"):
@@ -548,7 +605,8 @@ class Dashboard:
             self.ed_load()
         self.root.focus_set()
         for name, canvas in (("main", self.c), ("setup", self.c2), ("camera", self.c3), ("profiles", self.c4),
-                             ("extras", self.c5), ("autopilot", self.c6), ("mission", self.c7)):
+                             ("extras", self.c5), ("autopilot", self.c6), ("mission", self.c7),
+                             ("keys", self.c8)):
             if name == page:
                 canvas.pack(expand=True)
             else:
@@ -598,13 +656,18 @@ class Dashboard:
         c.create_text(36, 94, anchor="w", text="KEYBOARD DRIVE", font=fnt(15, "bold"), fill=FG)
         c.create_text(36, 116, anchor="w", font=fnt(10), fill=DIM,
                       text="Drive with this laptop's keyboard. Works with or without the controller.")
-        for i, (keys, what) in enumerate((("W / S", "forward/back"), ("A / D", "turn left/right"),
-                                          ("Space / Shift", "up/down"), ("R / F", "tilt nose up/down"),
-                                          ("Enter", "ARM"), ("Esc", "STOP"))):
-            x, y = 36 + (i // 2) * 250, 144 + (i % 2) * 24
-            c.create_text(x, y, anchor="w", text=keys, font=fnt(11, "bold"),
-                          fill=RED if keys == "Esc" else GREEN if keys == "Enter" else FG)
-            c.create_text(x + 112, y, anchor="w", text=what, font=fnt(10), fill=DIM)
+        self.kb_legend = []
+        for i, (pair, what) in enumerate(((("forward", "back"), "forward/back"), (("left", "right"), "turn left/right"),
+                                          (("up", "down"), "up/down"), (("tilt_up", "tilt_down"), "tilt nose up/down"),
+                                          (None, "ARM"), (None, "STOP"))):
+            x, y = 36 + (i // 2) * 220, 144 + (i % 2) * 24
+            fixed = {"ARM": "Enter", "STOP": "Esc"}.get(what)
+            kt = c.create_text(x, y, anchor="w", text=fixed or "", font=fnt(11, "bold"),
+                               fill=RED if fixed == "Esc" else GREEN if fixed == "Enter" else FG)
+            c.create_text(x + (60 if fixed else 100), y, anchor="w", text=what, font=fnt(10), fill=DIM)
+            if pair:
+                self.kb_legend.append((kt, pair))
+        self.small_button(c, 614, 134, 764, 176, "EDIT KEYS", self.show_keys, tag="ex_keys")
         self.kb_toggle = self.toggle(c, 614, 82, "ex_kb", lambda: send(f"keyboard:{0 if self.kb_on else 1}"))
 
         c.create_rectangle(20, 192, 780, 318, fill=PANEL, width=0)
@@ -721,6 +784,9 @@ class Dashboard:
             c.itemconfig(rect, fill=GREEN if on else BG)
             c.itemconfig(txt, text="ON" if on else "OFF")
         c.itemconfig(self.ex_vol, text=str(self.snd_vol))
+        for kt, (a1, a2) in self.kb_legend:
+            c.itemconfig(kt, text=f"{key_label(self.keymap.get(a1))} / {key_label(self.keymap.get(a2))}")
+        self.update_keys(st)
         self.button_text(c, "ex_test", "■ STOP SOUND" if self.snd_playing else "▶ TEST")
         name = st.get("tune_name")
         c.itemconfig(self.ex_tune, text=(f"Tune: {name} ({st.get('tune_secs', 0):.0f} s"
@@ -966,6 +1032,115 @@ class Dashboard:
     # ------------------------------------------------------------ autopilot page (mouse only)
     def show_autopilot(self):
         self.show_page("autopilot")
+
+    # ------------------------------------------------------------ keyboard keys page (keyboard drive profile)
+    def show_keys(self):
+        self.key_listen = None
+        self.keys_render()
+        self.show_page("keys")
+
+    def build_keys(self):
+        c = self.c8 = tk.Canvas(self.root, width=CW, height=CH, bg=BG, highlightthickness=0)
+        c.create_rectangle(0, 0, W, 66, fill=PANEL, width=0)
+        self.small_button(c, 12, 12, 112, 54, "◀ BACK", self.show_extras, tag="keys_back")
+        c.create_text(130, 33, anchor="w", text="KEYBOARD KEYS", font=fnt(17, "bold"), fill=FG)
+        self.keys_state = c.create_text(785, 33, anchor="e", text="", font=fnt(14, "bold"), fill=FG)
+        c.create_text(24, 86, anchor="w", font=fnt(11), fill=DIM,
+                      text="Tap a box, then press the key you want. Enter = ARM and Esc = STOP are fixed.")
+        self.key_boxes = {}
+        for i, (a, label, *_r) in enumerate(core.KEY_ACTIONS):
+            x0, y = 20 + (i % 2) * 390, 102 + (i // 2) * 54
+            c.create_rectangle(x0, y, x0 + 370, y + 46, fill=PANEL, width=0)
+            c.create_text(x0 + 16, y + 23, anchor="w", text=label, font=fnt(13, "bold"), fill=FG)
+            tag = f"key_{a}"
+            rect = c.create_rectangle(x0 + 196, y + 6, x0 + 360, y + 40, fill=BG, outline=DIM, width=2, tags=tag)
+            txt = c.create_text(x0 + 278, y + 23, text="", font=fnt(13, "bold"), fill=FG, tags=tag)
+            c.tag_bind(tag, "<Button-1>", lambda e, a=a: self.key_click(a))
+            self.key_boxes[a] = (rect, txt)
+        c.create_text(24, 398, anchor="w", text="PRESETS", font=fnt(11, "bold"), fill=DIM)
+        for x0, name in ((110, "WASD"), (250, "ARROWS")):
+            self.small_button(c, x0, 376, x0 + 130, 420, name, lambda n=name: self.key_preset(n), tag=f"kp_{name}")
+        c.create_rectangle(20, 428, 780, 470, fill=PANEL, width=0)
+        self.keys_msg = c.create_text(34, 449, anchor="w", text="", font=fnt(12), fill=FG)
+        c.create_rectangle(1, 1, W - 1, H - 1, outline=DIM, width=1)
+        c.scale("all", 0, 0, SX, SY)
+        c.move("all", OX, OY)
+        self.keys_note, self.keys_note_until = "", 0.0
+
+    def keys_say(self, text, secs=5):
+        self.keys_note, self.keys_note_until = text, time.monotonic() + secs
+
+    def keys_render(self):
+        if not hasattr(self, "key_boxes"):
+            return
+        for a, (rect, txt) in self.key_boxes.items():
+            listening = a == self.key_listen
+            self.c8.itemconfig(rect, fill=AMBER if listening else BG)
+            self.c8.itemconfig(txt, text="PRESS A KEY…" if listening else key_label(self.keymap.get(a)),
+                               fill=BG if listening else FG)
+
+    def key_click(self, action):
+        if self.armed:
+            self.keys_say("Press STOP first: keys can only be changed while SAFE")
+            return
+        self.key_listen = None if self.key_listen == action else action
+        self.root.focus_set()
+        self.keys_render()
+        if self.key_listen:
+            self.keys_say("Press the new key (Esc = cancel)", 30)
+
+    def key_bind(self, k):
+        action, self.key_listen = self.key_listen, None
+        if k in core.FIXED_KEYS:
+            self.keys_say(f"{key_label(k) if k != 'f11' else 'F11'} is fixed (ARM / STOP / full screen): pick another key")
+        else:
+            old = self.keymap.get(action)
+            for other, key in self.keymap.items():      # key already used: the two actions swap keys
+                if key == k and other != action:
+                    self.keymap[other] = old
+                    self.keys_say(f"{key_label(k)} was used for something else: swapped")
+                    break
+            else:
+                self.keys_say(f"{dict((x[0], x[1]) for x in core.KEY_ACTIONS)[action]} = {key_label(k)}  (saved)")
+            self.keymap[action] = k
+            self.keys_save()
+        self.keys_render()
+
+    def key_preset(self, name):
+        if self.armed:
+            self.keys_say("Press STOP first: keys can only be changed while SAFE")
+            return
+        self.key_listen = None
+        self.keymap = dict(core.KEY_PRESETS[name])
+        self.keys_save()
+        self.keys_render()
+        self.keys_say(f"{name} keys (saved)")
+
+    def keys_save(self):
+        self.kb_release_all()
+        self.kb_keys = set(core.key_axes(self.keymap))
+        try:
+            with open(keymap_path() + ".tmp", "w") as f:
+                json.dump(self.keymap, f, indent=1)
+            os.replace(keymap_path() + ".tmp", keymap_path())
+        except OSError as ex:
+            self.keys_say(f"Could not save: {ex.strerror or ex}")
+            return
+        send("reload_keys")
+
+    def update_keys(self, st):
+        c = self.c8
+        if st is None:
+            c.itemconfig(self.keys_state, text="OFFLINE", fill=AMBER)
+        else:
+            c.itemconfig(self.keys_state, text="ARMED" if st["armed"] else "SAFE",
+                         fill=GREEN if st["armed"] else RED)
+        if self.key_listen and self.armed:
+            self.key_listen = None
+            self.keys_render()
+        note = self.keys_note if time.monotonic() < self.keys_note_until else ""
+        c.itemconfig(self.keys_msg, text=short(note or ("Keyboard drive is OFF: switch it on in SETUP › EXTRAS"
+                                                        if not self.kb_on else "")))
 
     def show_mission(self):
         self.mi_load()
@@ -1289,7 +1464,8 @@ class Dashboard:
         self.small_button(c, 710, 272, 792, 306, "FLIP ↻", self.flip_camera, tag="cam_flip")
         self.small_button(c, 620, 312, 702, 346, "PICTURE", self.toggle_picture, tag="cam_pic")
         self.pick_btn = self.small_button(c, 710, 312, 792, 346, "PICK", self.toggle_pick, tag="cam_pick")
-        self.small_button(c, 620, 352, 792, 386, "⛶ FULL SCREEN", self.toggle_full, tag="cam_full")
+        self.small_button(c, 620, 352, 702, 386, "⛶ FULL", self.toggle_full, tag="cam_full")
+        self.small_button(c, 710, 352, 792, 386, "CAMERA ▸", self.next_camera, tag="cam_next")
         c.bind("<Button-1>", self.cam_click, add="+")
         self.flip_label = c.create_text(10, 14, anchor="w", text="", font=fnt(11, "bold"), fill=AMBER)
         c.create_rectangle(620, 394, 792, 470, fill=RED, outline=TRACK, width=2, tags="cam_stop")
@@ -1312,6 +1488,7 @@ class Dashboard:
         c.create_text(40, 90, text="EXIT", font=fnt(11, "bold"), fill=FG, tags=("fs", "fs_exit"))
         c.tag_bind("fs_exit", "<Button-1>", lambda e: self.toggle_full())
         self.full = False
+        self.cam_msg_job = None
         self.build_picture_panel(c)
         self.picking = False
         c.scale("all", 0, 0, SX, SY)
@@ -1404,6 +1581,27 @@ class Dashboard:
         rgb = "#%02x%02x%02x" % tuple(int(t / n) for t in tot)
         self.c3.itemconfig(self.pick_msg, text="■ TARGET COLOUR PICKED", fill=rgb if pick[2] > 0.3 else AMBER)
         self.root.after(4000, lambda: self.picking or self.c3.itemconfig(self.pick_msg, text="", fill=AMBER))
+
+    def next_camera(self):
+        """CAMERA button: switch to the next camera the laptop can see (saved in camera.json)."""
+        cams = list_cameras()
+        c = self.c3
+        if not cams:
+            c.itemconfig(self.pick_msg, text="NO CAMERAS FOUND")
+        elif camera_setting() != "auto":
+            c.itemconfig(self.pick_msg, text=f"CAMERA IS SET IN config.toml ({camera_setting()})")
+        else:
+            cur = self.cam.dev or find_camera()
+            devs = [d for d, _ in cams]
+            i = (devs.index(cur) + 1) % len(cams) if cur in devs else 0
+            dev, name = cams[i]
+            save_camera_settings(self.cam_flip, self.cam_adj, device=dev)
+            c.itemconfig(self.pick_msg, text=f"CAMERA {i + 1} OF {len(cams)}: {short(name, 28)}")
+            if self.cam.alive() or self.page == "camera":
+                self.camera_policy(restart=True)
+        if self.cam_msg_job:
+            self.root.after_cancel(self.cam_msg_job)
+        self.cam_msg_job = self.root.after(3500, lambda: self.picking or c.itemconfig(self.pick_msg, text=""))
 
     def toggle_full(self):
         """FULL SCREEN: the video fills the screen (4:3, side bars keep STOP and ARMED/SAFE)."""

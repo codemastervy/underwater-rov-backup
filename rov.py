@@ -19,6 +19,7 @@ Controls (default):
 
 Keyboard drive (switch it on on the case screen: SETUP > EXTRAS):
   W/S forward/back, A/D turn, Space up, Shift down, R/F tilt, Enter ARM, Esc STOP.
+  Which key does what can be changed: SETUP > EXTRAS > EDIT KEYS (saved in keymap.json).
   The dashboard sends the keys; if it stops sending for 0.5 s the keys count as released
   (and with no controller connected the motors disarm).
 
@@ -57,9 +58,48 @@ STATUS_PATH = "/dev/shm/rov-status.json"   # read by rov_gui.py
 CMD_PATH = "/dev/shm/rov-cmd"              # written by rov_gui.py
 KEYS_PATH = "/dev/shm/rov-keys.json"       # keyboard drive: keys held down, written by rov_gui.py
 
-# Keyboard drive: key -> (motion axis, amount)
-KEY_AXES = {"w": ("surge", 1.0), "s": ("surge", -1.0), "d": ("yaw", 1.0), "a": ("yaw", -1.0),
-            "space": ("heave", 1.0), "shift": ("heave", -1.0), "r": ("pitch", 0.6), "f": ("pitch", -0.6)}
+# Keyboard drive profile: which key does what (SETUP > EXTRAS > EDIT KEYS, saved in keymap.json).
+# action, label, motion axis, amount (speed_up / speed_down are handled by the dashboard)
+KEY_ACTIONS = [("forward", "Forward", "surge", 1.0), ("back", "Back", "surge", -1.0),
+               ("left", "Turn left", "yaw", -1.0), ("right", "Turn right", "yaw", 1.0),
+               ("up", "Up", "heave", 1.0), ("down", "Down", "heave", -1.0),
+               ("tilt_up", "Tilt nose up", "pitch", 0.6), ("tilt_down", "Tilt nose down", "pitch", -0.6),
+               ("speed_up", "Speed +", None, 0), ("speed_down", "Speed −", None, 0)]
+KEY_PRESETS = {
+    "WASD": {"forward": "w", "back": "s", "left": "a", "right": "d", "up": "space", "down": "shift",
+             "tilt_up": "r", "tilt_down": "f", "speed_up": "e", "speed_down": "q"},
+    "ARROWS": {"forward": "up", "back": "down", "left": "left", "right": "right", "up": "space", "down": "ctrl",
+               "tilt_up": "prior", "tilt_down": "next", "speed_up": "equal", "speed_down": "minus"},
+}
+FIXED_KEYS = {"return", "kp_enter", "escape", "f11"}     # ARM, STOP, full screen: can't be re-used
+
+
+def load_keymap(path):
+    """keymap.json -> {action: key} (WASD for anything missing or broken)."""
+    km = dict(KEY_PRESETS["WASD"])
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            for a, *_ in KEY_ACTIONS:
+                k = data.get(a)
+                if isinstance(k, str) and k and k not in FIXED_KEYS:
+                    km[a] = k.lower()
+    except (OSError, ValueError):
+        pass
+    return km
+
+
+def key_axes(keymap):
+    """{action: key} -> {key: (axis, amount)} for the driving keys."""
+    out = {}
+    for a, _, axis, amount in KEY_ACTIONS:
+        if axis and keymap.get(a):
+            out[keymap[a]] = (axis, amount)
+    return out
+
+
+KEY_AXES = key_axes(KEY_PRESETS["WASD"])
 
 VISION_PATH = "/dev/shm/rov-vision.json"  # camera autopilot results, written by rov_gui.py
 
@@ -913,6 +953,10 @@ class ROV:
         self.kbd_enabled = bool(c.get("keyboard_drive", False))
         self.kbd_keys = set()
         self.kbd_live = False
+        self.keymap_path = os.path.join(os.path.dirname(os.path.abspath(config_path or
+                                                                        os.path.join(HERE, "config.toml"))),
+                                        "keymap.json")
+        self.key_axes = key_axes(load_keymap(self.keymap_path))
         self.sound_on = bool(c.get("arm_sound", True))
         self.sound_volume = max(1, min(15, int(c.get("sound_volume", 5))))
         self.tune = None
@@ -1133,7 +1177,7 @@ class ROV:
                 cmd[axis] += v * w
         if self.kbd_live:
             for k in self.kbd_keys:
-                axis, v = KEY_AXES[k]
+                axis, v = self.key_axes[k]
                 cmd[axis] += v
         return {ax: self.inv[ax] * max(-1.0, min(1.0, cmd[ax])) for ax in AXES}
 
@@ -1152,7 +1196,7 @@ class ROV:
         if abs(time.time() - float(st.get("ts", 0))) > self.hb_timeout:
             return
         self.kbd_live = True
-        self.kbd_keys = {k for k in st.get("keys", []) if k in KEY_AXES}
+        self.kbd_keys = {k for k in st.get("keys", []) if k in self.key_axes}
 
     def set_keyboard(self, on):
         if self.armed:
@@ -1398,6 +1442,9 @@ class ROV:
         elif cmd == "kbd_arm":
             self.read_keys()
             self.arm(source="keyboard")
+        elif cmd == "reload_keys":
+            self.key_axes = key_axes(load_keymap(self.keymap_path))
+            self.say("Keyboard keys updated")
         elif cmd.startswith("keyboard:"):
             self.set_keyboard(cmd.endswith(":1"))
         elif cmd.startswith("sound:"):
