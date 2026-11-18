@@ -270,18 +270,13 @@ DESIGN_KEYS = ("pitch_mix", "heave_front", "heave_rear", "surge_pitch")
 DESIGN_LIMITS = {"pitch_mix": (0.0, 1.0), "heave_front": (0.3, 1.0), "heave_rear": (0.3, 1.0),
                  "surge_pitch": (-0.5, 0.5)}
 DEFAULT_DESIGNS = [
-    {"id": "v13", "name": "v13 current robot", "note": "The robot we have now: motors exactly as wired, no trim.",
+    {"id": "v13", "name": "v13 original", "short": "v13 original",
+     "note": "The robot we have now: motors exactly as wired, no trim.",
      "pitch_mix": 1.0, "heave_front": 1.0, "heave_rear": 1.0, "surge_pitch": 0.0},
-    {"id": "v14", "name": "v14 flooded hull", "note": "Branch v14-flooded-hull. Softer tilt so a full stick "
-     "can't loop it.", "pitch_mix": 0.4, "heave_front": 1.0, "heave_rear": 1.0, "surge_pitch": 0.0},
-    {"id": "v15", "name": "v15 open frame", "note": "Branch main: open frame, noodles on top. Softer tilt so a "
-     "full stick can't loop it.", "pitch_mix": 0.4, "heave_front": 1.0, "heave_rear": 1.0, "surge_pitch": 0.0},
-    {"id": "v16", "name": "v16 classic", "note": "Branch v16-classic: v13 shape, noodles on top. Front up motor "
-     "eased off, a little tilt while driving: level in both.",
-     "pitch_mix": 0.4, "heave_front": 0.65, "heave_rear": 1.0, "surge_pitch": 0.2},
-    {"id": "v17", "name": "v17 v13 shape", "note": "Branch v17-v13-shape: v13 look, noodles inside. Gentlest "
-     "tilt (it rights itself more softly); rear up motor eased off; tilt while driving keeps it level.",
-     "pitch_mix": 0.25, "heave_front": 1.0, "heave_rear": 0.92, "surge_pitch": 0.27},
+    {"id": "new", "name": "New frame (pool noodle)", "short": "New frame",
+     "note": "The Onshape frame with the pool noodle on top (aquabots-rov-hull, main). Gentle tilt so a full "
+     "stick can't loop it; front up motor eased off and a little tilt while driving keep it level.",
+     "pitch_mix": 0.25, "heave_front": 0.75, "heave_rear": 1.0, "surge_pitch": 0.3},
 ]
 
 

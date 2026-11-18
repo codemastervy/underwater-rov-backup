@@ -117,11 +117,10 @@ colour (saturation) and **RED / GREEN / BLUE** on their own (water makes things 
 Saved in `camera.json`. **⛶ FULL SCREEN** makes the video fill the window; STOP and ARMED/SAFE stay at the side,
 **EXIT** goes back.
 
-**Frame design** (SETUP › DESIGN, only while SAFE): pick the frame you built: **v13** (current robot, no trim: the
-default), **v14**, **v15**, **v16** or **v17** (the hull designs in
-[aquabots-rov-hull](https://github.com/codemastervy/aquabots-rov-hull), one branch each). Each design trims the
-motors for its shape; **−/+** fine-tunes it in the pool (saved in `designs.json`, kept on updates), **DEFAULTS** puts
-it back. Same as the Pi version: see the Pi repo's README (Frame designs) for the table of values.
+**Frame** (SETUP › EXTRAS › FRAME, only while SAFE): pick the frame on the robot: **V13 ORIGINAL** (no trim: the
+default) or **NEW FRAME** (the pool-noodle frame in [aquabots-rov-hull](https://github.com/codemastervy/aquabots-rov-hull)).
+Each one trims the motors for its shape. **TRIM ▸** (or SETUP › DESIGN) fine-tunes it in the pool with **−/+** (saved in
+`designs.json`, kept on updates); **DEFAULTS** puts it back. Same as the Pi version: see the Pi repo's README (Frame designs).
 
 `bash run.sh --fullscreen` for full screen, `--size 1600x960` for a bigger window.
 

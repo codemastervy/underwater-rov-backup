@@ -15,8 +15,8 @@ arm_switch_pin = -1      # not used on the Mega
 device = "auto"          # "auto" picks the USB capture card, not the laptop webcam. Or "/dev/video2" etc.
 
 [control]
-design = "v13"           # frame design: v13 v14 v15 v16 v17. Pick it in the app (SETUP > DESIGN);
-                         # each design trims the motors for its shape (see DEFAULT_DESIGNS in rov.py)
+design = "v13"           # frame: "v13" (original) or "new" (new frame). Pick it in the app (SETUP > EXTRAS > FRAME);
+                         # each frame trims the motors for its shape (see DEFAULT_DESIGNS in rov.py)
 drive_profile = "Standard"   # active drive profile. Edit profiles in the app: SETUP > PROFILES.
                              # Stored in profiles.json. TRIANGLE = next profile.
 deadzone = 0.08

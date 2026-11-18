@@ -759,13 +759,27 @@ class Dashboard:
         self.small_button(c, 614, 258, 764, 310, "▶ TEST", self.tune_test, tag="ex_test")
         self.snd_toggle = self.toggle(c, 614, 200, "ex_snd", lambda: send(f"sound:{0 if self.snd_on else 1}"))
 
-        c.create_rectangle(20, 326, 780, 406, fill=PANEL, width=0)
-        c.create_text(36, 348, anchor="w", text="SOFTWARE UPDATE", font=fnt(15, "bold"), fill=FG)
-        self.ex_upd = c.create_text(36, 380, anchor="w", font=fnt(10), fill=DIM, text="")
-        self.small_button(c, 614, 340, 764, 392, "CHECK NOW", self.update_click, tag="ex_upd")
+        c.create_rectangle(20, 326, 780, 382, fill=PANEL, width=0)
+        c.create_text(36, 342, anchor="w", text="SOFTWARE UPDATE", font=fnt(15, "bold"), fill=FG)
+        self.ex_upd = c.create_text(36, 366, anchor="w", font=fnt(10), fill=DIM, text="")
+        self.small_button(c, 614, 332, 764, 376, "CHECK NOW", self.update_click, tag="ex_upd")
 
-        c.create_rectangle(20, 414, 780, 458, fill=PANEL, width=0)
-        self.ex_msg = c.create_text(34, 436, anchor="w", text="", font=fnt(13), fill=FG)
+
+        # FRAME: which robot frame is fitted (its motor trim). Same as SETUP > DESIGN; TRIM opens that page.
+        c.create_rectangle(20, 390, 780, 440, fill=PANEL, width=0)
+        c.create_text(36, 405, anchor="w", text="FRAME", font=fnt(15, "bold"), fill=FG)
+        self.ex_frame = c.create_text(36, 426, anchor="w", font=fnt(9), fill=DIM, text="")
+        self.ex_frames = []
+        for i, (x0, x1) in enumerate(((236, 396), (404, 564))):
+            tag = f"ex_frame_{i}"
+            rect = c.create_rectangle(x0, 396, x1, 434, fill=BG, outline=DIM, width=2, tags=tag)
+            txt = c.create_text((x0 + x1) // 2, 415, text="", font=fnt(12, "bold"), fill=FG, tags=tag)
+            c.tag_bind(tag, "<Button-1>", lambda e, i=i: self.design_pick(i))
+            self.ex_frames.append((rect, txt))
+        self.small_button(c, 614, 396, 764, 434, "TRIM ▸", self.show_design, tag="ex_trim")
+
+        c.create_rectangle(20, 446, 780, 474, fill=PANEL, width=0)
+        self.ex_msg = c.create_text(34, 460, anchor="w", text="", font=fnt(11), fill=FG)
         c.create_rectangle(1, 1, W - 1, H - 1, outline=DIM, width=1)
         c.scale("all", 0, 0, SX, SY)
         c.move("all", OX, OY)
@@ -834,6 +848,16 @@ class Dashboard:
 
     def update_extras(self, st):
         c = self.c5
+        if st is not None:
+            self.dz_designs = st.get("designs") or []
+            self.dz_active = st.get("design")
+        for i, (rect, txt) in enumerate(self.ex_frames):
+            d = self.dz_designs[i] if i < len(self.dz_designs) else None
+            c.itemconfig(txt, text=d.get("short", d["name"]).upper() if d else "")
+            on = bool(d) and d["id"] == self.dz_active
+            c.itemconfig(rect, fill=BLUE if on else BG, outline=BLUE if on else DIM)
+        cur = next((x for x in self.dz_designs if x["id"] == self.dz_active), None)
+        c.itemconfig(self.ex_frame, text=short(cur["name"], 30) if cur else "")
         u = self.upd
         if u:
             u.tick()
