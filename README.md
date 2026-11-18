@@ -39,6 +39,8 @@ The camera shots use a made-up test picture (no capture card plugged in).
 | `rov_gui.py` | dashboard window: camera, profiles editor, motor flip, STOP |
 | `config.toml` | Mega pins, motor jobs/flips (copied from the Pi) |
 | `profiles.json` | drive profiles (copied from the Pi) |
+| `designs.json` | your changes to the frame-design trims (SETUP > DESIGN; not in the repo) |
+| `tests/` | automatic tests: `python3 -m unittest discover tests` (no Mega or controller needed) |
 | `setup.sh` | one-command install / update (see above) |
 | `updater.py` | automatic updates from GitHub (used by the app) |
 | `install.sh` · `upload-mega.sh` · `run.sh` | set up · flash the Mega · start |
@@ -114,6 +116,12 @@ Any stick/key movement or STOP takes over. Green status bar = working; flashing 
 colour (saturation) and **RED / GREEN / BLUE** on their own (water makes things blue-green: try more RED, less BLUE).
 Saved in `camera.json`. **⛶ FULL SCREEN** makes the video fill the window; STOP and ARMED/SAFE stay at the side,
 **EXIT** goes back.
+
+**Frame design** (SETUP › DESIGN, only while SAFE): pick the frame you built: **v13** (current robot, no trim: the
+default), **v14**, **v15**, **v16** or **v17** (the hull designs in
+[aquabots-rov-hull](https://github.com/codemastervy/aquabots-rov-hull), one branch each). Each design trims the
+motors for its shape; **−/+** fine-tunes it in the pool (saved in `designs.json`, kept on updates), **DEFAULTS** puts
+it back. Same as the Pi version: see the Pi repo's README (Frame designs) for the table of values.
 
 `bash run.sh --fullscreen` for full screen, `--size 1600x960` for a bigger window.
 

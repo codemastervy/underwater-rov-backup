@@ -257,6 +257,75 @@ def complete_profiles(profs, config_path=None):
     return profs
 
 
+# --------------------------------------------------------------------------- frame designs
+# Each hull design (github.com/codemastervy/aquabots-rov-hull, one branch per design) needs its own motor trim.
+# SETUP > DESIGN picks one (saved as `design = "..."` in config.toml). Values changed on that page are saved
+# in designs.json next to config.toml; DEFAULTS puts a design back to the values below.
+#   pitch_mix   - share of the tilt control on the front/rear up motors (1.0 = as wired in config.toml)
+#   heave_front - front up/down motor's share of up/down (evens out a frame that is heavier at one end)
+#   heave_rear  - rear up/down motor's share of up/down
+#   surge_pitch - tilt added in proportion to forward/back, so the frame stays level while driving
+# The trims come from each design's simulation (analysis/sim.py on its branch): check them in the pool.
+DESIGN_KEYS = ("pitch_mix", "heave_front", "heave_rear", "surge_pitch")
+DESIGN_LIMITS = {"pitch_mix": (0.0, 1.0), "heave_front": (0.3, 1.0), "heave_rear": (0.3, 1.0),
+                 "surge_pitch": (-0.5, 0.5)}
+DEFAULT_DESIGNS = [
+    {"id": "v13", "name": "v13 current robot", "note": "The robot we have now: motors exactly as wired, no trim.",
+     "pitch_mix": 1.0, "heave_front": 1.0, "heave_rear": 1.0, "surge_pitch": 0.0},
+    {"id": "v14", "name": "v14 flooded hull", "note": "Branch v14-flooded-hull. Softer tilt so a full stick "
+     "can't loop it.", "pitch_mix": 0.4, "heave_front": 1.0, "heave_rear": 1.0, "surge_pitch": 0.0},
+    {"id": "v15", "name": "v15 open frame", "note": "Branch main: open frame, noodles on top. Softer tilt so a "
+     "full stick can't loop it.", "pitch_mix": 0.4, "heave_front": 1.0, "heave_rear": 1.0, "surge_pitch": 0.0},
+    {"id": "v16", "name": "v16 classic", "note": "Branch v16-classic: v13 shape, noodles on top. Front up motor "
+     "eased off, a little tilt while driving: level in both.",
+     "pitch_mix": 0.4, "heave_front": 0.65, "heave_rear": 1.0, "surge_pitch": 0.2},
+    {"id": "v17", "name": "v17 v13 shape", "note": "Branch v17-v13-shape: v13 look, noodles inside. Gentlest "
+     "tilt (it rights itself more softly); rear up motor eased off; tilt while driving keeps it level.",
+     "pitch_mix": 0.25, "heave_front": 1.0, "heave_rear": 0.92, "surge_pitch": 0.27},
+]
+
+
+def designs_path(config_path=None):
+    return os.path.join(os.path.dirname(os.path.abspath(config_path or os.path.join(HERE, "config.toml"))),
+                        "designs.json")
+
+
+def design_value(key, value):
+    lo, hi = DESIGN_LIMITS[key]
+    return round(max(lo, min(hi, float(value))), 2)
+
+
+def load_designs(config_path=None):
+    """Built-in designs with any values saved from SETUP > DESIGN (designs.json) on top."""
+    out = [dict(d) for d in DEFAULT_DESIGNS]
+    try:
+        with open(designs_path(config_path)) as f:
+            saved = json.load(f)
+    except (OSError, ValueError):
+        saved = {}
+    for d in out:
+        s = saved.get(d["id"]) if isinstance(saved, dict) else None
+        if isinstance(s, dict):
+            for k in DESIGN_KEYS:
+                try:
+                    d[k] = design_value(k, s[k])
+                except (KeyError, TypeError, ValueError):
+                    pass
+    return out
+
+
+def save_designs(designs, config_path=None):
+    try:
+        path = designs_path(config_path)
+        with open(path + ".tmp", "w") as f:
+            json.dump({d["id"]: {k: d[k] for k in DESIGN_KEYS} for d in designs}, f, indent=1)
+        os.replace(path + ".tmp", path)
+        return True
+    except OSError as ex:
+        log.error(f"saving designs failed: {ex}")
+        return False
+
+
 # --------------------------------------------------------------------------- GPIO
 
 class LgpioBackend:
@@ -508,7 +577,9 @@ class Thruster:
         self.name = cfg["name"]
         self.rpwm = int(cfg["rpwm"])
         self.lpwm = int(cfg["lpwm"])
-        self.coef = {a: float(cfg.get(a, 0.0)) for a in AXES}
+        self.base = {a: float(cfg.get(a, 0.0)) for a in AXES}   # as wired in config.toml
+        self.coef = dict(self.base)                                 # after the design's trim
+        self.surge_pitch = 0.0
         self.invert = bool(cfg.get("invert", False))
         self.value = 0.0          # current (ramped) output, -1..1
         self._sent = (0, 0)       # last (rpwm duty, lpwm duty) written
@@ -518,8 +589,17 @@ class Thruster:
                 ("tilt", "pitch")]
         return " + ".join(label for label, a in jobs if self.coef[a]) or "unused"
 
+    def set_design(self, d):
+        """Trim for the frame design (SETUP > DESIGN). Front/rear = sign of this motor's pitch share."""
+        b = self.base
+        self.coef = dict(b)
+        self.coef["pitch"] = b["pitch"] * d["pitch_mix"]
+        if b["pitch"] and b["heave"]:
+            self.coef["heave"] = b["heave"] * (d["heave_front"] if b["pitch"] > 0 else d["heave_rear"])
+        self.surge_pitch = b["pitch"] * d["surge_pitch"]
+
     def target(self, cmd):
-        return sum(self.coef[a] * cmd[a] for a in AXES)
+        return sum(self.coef[a] * cmd[a] for a in AXES) + self.surge_pitch * cmd["surge"]
 
     def apply(self, gpio, value, min_duty):
         self.value = value
@@ -979,6 +1059,9 @@ class ROV:
         self.led_pin = g.get("status_led_pin", -1)
         self.switch_pin = g.get("arm_switch_pin", -1)
         self.thrusters = [Thruster(m) for m in cfg["motor"]]
+        self.designs = load_designs(config_path)
+        self.design_id = str(c.get("design", "v13"))
+        self.apply_design()
         self.armed = False
         self.pad = None
         self.running = True
@@ -1196,6 +1279,50 @@ class ROV:
         except (OSError, ValueError) as ex:
             log.error(f"saving config failed: {ex}")
             return False
+
+    # ---- frame design (SETUP > DESIGN) ----
+    def design(self):
+        return next((d for d in self.designs if d["id"] == self.design_id), self.designs[0])
+
+    def apply_design(self):
+        d = self.design()
+        self.design_id = d["id"]
+        for t in self.thrusters:
+            t.set_design(d)
+
+    def design_locked(self):
+        if self.armed:
+            self.say("Press STOP first: designs only change while SAFE")
+        return self.armed
+
+    def set_design(self, did):
+        if self.design_locked() or not any(d["id"] == did for d in self.designs):
+            return
+        self.design_id = did
+        self.apply_design()
+        saved = self.save_setting("design", f'"{did}"', section="[control]")
+        self.say(f"Design: {self.design()['name']}" + ("" if saved else " (could not save!)"))
+
+    def tune_design(self, key, value):
+        if self.design_locked() or key not in DESIGN_KEYS:
+            return
+        d = self.design()
+        try:
+            d[key] = design_value(key, value)
+        except ValueError:
+            return
+        self.apply_design()
+        saved = save_designs(self.designs, self.config_path)
+        self.say(f"{d['name']}: {key} = {d[key]}" + ("" if saved else " (could not save!)"))
+
+    def reset_design(self):
+        if self.design_locked():
+            return
+        d = self.design()
+        d.update({k: v for k, v in next(x for x in DEFAULT_DESIGNS if x["id"] == d["id"]).items() if k in DESIGN_KEYS})
+        self.apply_design()
+        save_designs(self.designs, self.config_path)
+        self.say(f"{d['name']}: back to the design's values")
 
     def change_speed(self, d):
         self.level = max(0, min(self.level + d, len(self.levels) - 1))
@@ -1468,6 +1595,8 @@ class ROV:
             "tune_secs": round(self.tune_secs, 1),
             "tune_custom": self.tune_custom,
             "autopilot": self.ap.status(),
+            "design": self.design_id,
+            "designs": self.designs,
             "msg": self.status_msg,
         }
         try:
@@ -1515,6 +1644,13 @@ class ROV:
             self.end_tune()
         elif cmd.startswith("tune:"):
             self.set_tune(cmd[5:])
+        elif cmd.startswith("design:"):
+            self.set_design(cmd[7:])
+        elif cmd.startswith("design_set:"):
+            _, key, value = (cmd.split(":", 2) + ["", ""])[:3]
+            self.tune_design(key, value)
+        elif cmd == "design_reset":
+            self.reset_design()
         elif cmd.startswith("ap_enable:"):
             self.ap.set_enabled(cmd.endswith(":1"))
         elif cmd == "ap_off":

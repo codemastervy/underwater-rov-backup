@@ -453,6 +453,7 @@ class Dashboard:
         self.build_profiles()
         self.build_extras()
         self.build_autopilot()
+        self.build_design()
         self.build_mission()
         self.build_camera()
         self.update()
@@ -553,11 +554,12 @@ class Dashboard:
         self.root.after(50, self.send_keys)
 
     def setup_tabs(self, c, active):
-        self.small_button(c, 12, 12, 112, 54, "◀ BACK", self.show_main, tag=f"back_{active}")
-        for x0, x1, name, label, action in ((122, 242, "motors", "MOTORS", self.show_setup),
-                                            (252, 382, "profiles", "PROFILES", self.show_profiles),
-                                            (392, 502, "extras", "EXTRAS", self.show_extras),
-                                            (512, 662, "autopilot", "AUTOPILOT", self.show_autopilot)):
+        self.small_button(c, 12, 12, 92, 54, "◀ BACK", self.show_main, tag=f"back_{active}")
+        for x0, x1, name, label, action in ((100, 202, "motors", "MOTORS", self.show_setup),
+                                            (210, 326, "profiles", "PROFILES", self.show_profiles),
+                                            (334, 432, "extras", "EXTRAS", self.show_extras),
+                                            (440, 570, "autopilot", "AUTOPILOT", self.show_autopilot),
+                                            (578, 682, "design", "DESIGN", self.show_design)):
             self.small_button(c, x0, 12, x1, 54, label, action, color=BLUE if name == active else BG,
                               tag=f"tab_{name}_{active}")
 
@@ -601,7 +603,8 @@ class Dashboard:
             self.ed_load()
         self.root.focus_set()
         for name, canvas in (("main", self.c), ("setup", self.c2), ("camera", self.c3), ("profiles", self.c4),
-                             ("extras", self.c5), ("autopilot", self.c6), ("mission", self.c7)):
+                             ("extras", self.c5), ("autopilot", self.c6), ("mission", self.c7),
+                             ("design", self.c8)):
             if name == page:
                 canvas.pack(expand=True)
             else:
@@ -633,6 +636,86 @@ class Dashboard:
 
     def show_extras(self):
         self.show_page("extras")
+
+    def show_design(self):
+        self.show_page("design")
+
+    # ------------------------------------------------------------ design page (which frame is built)
+    DESIGN_ROWS = (("pitch_mix", "TILT POWER", "how hard the tilt control pushes"),
+                   ("heave_front", "FRONT UP MOTOR", "share of up/down"),
+                   ("heave_rear", "REAR UP MOTOR", "share of up/down"),
+                   ("surge_pitch", "LEVEL WHEN DRIVING", "tilt added with forward/back"))
+
+    def build_design(self):
+        c = self.c8 = tk.Canvas(self.root, width=W, height=H, bg=BG, highlightthickness=0)
+        c.create_rectangle(0, 0, W, 66, fill=PANEL, width=0)
+        self.setup_tabs(c, "design")
+        self.dz_state = c.create_text(785, 33, anchor="e", text="", font=fnt(14, "bold"), fill=FG)
+        c.create_text(30, 86, anchor="w", font=fnt(11), fill=DIM,
+                      text="Pick the frame you built: each one trims the motors for its shape. Only while SAFE.")
+        self.dz_rows = []
+        for i in range(5):
+            y = 102 + i * 60
+            tag = f"dz_pick_{i}"
+            rect = c.create_rectangle(20, y, 300, y + 52, fill=PANEL, outline="", tags=tag)
+            name = c.create_text(36, y + 26, anchor="w", text="", font=fnt(14, "bold"), fill=FG, tags=tag)
+            c.tag_bind(tag, "<Button-1>", lambda e, i=i: self.design_pick(i))
+            self.dz_rows.append((rect, name))
+        c.create_rectangle(310, 102, 780, 398, fill=PANEL, width=0)
+        self.dz_title = c.create_text(326, 122, anchor="w", text="", font=fnt(15, "bold"), fill=FG)
+        self.dz_note = c.create_text(326, 140, anchor="nw", text="", font=fnt(10), fill=DIM, width=int(440 * SX))
+        self.dz_vals = {}
+        for i, (key, label, sub) in enumerate(self.DESIGN_ROWS):
+            y = 200 + i * 46
+            c.create_text(326, y + 10, anchor="w", text=label, font=fnt(12, "bold"), fill=FG)
+            c.create_text(326, y + 30, anchor="w", text=sub, font=fnt(9), fill=DIM)
+            self.small_button(c, 594, y, 636, y + 38, "−", lambda k=key: self.design_step(k, -1), tag=f"dz_dn_{key}")
+            self.dz_vals[key] = c.create_text(674, y + 19, text="", font=fnt(15, "bold"), fill=FG)
+            self.small_button(c, 712, y, 754, y + 38, "+", lambda k=key: self.design_step(k, 1), tag=f"dz_up_{key}")
+        c.create_rectangle(20, 406, 620, 458, fill=PANEL, width=0)
+        self.dz_msg = c.create_text(34, 432, anchor="w", text="", font=fnt(12), fill=FG)
+        self.small_button(c, 630, 406, 780, 458, "DEFAULTS", lambda: self.design_send("design_reset"), tag="dz_reset")
+        c.create_rectangle(1, 1, W - 1, H - 1, outline=DIM, width=1)
+        c.scale("all", 0, 0, SX, SY)
+        c.move("all", MARGINS[0], MARGINS[1])
+        self.dz_designs, self.dz_active = [], None
+        self.dz_note_text, self.dz_note_until = "", 0.0
+
+    def design_send(self, cmd):
+        if self.armed:
+            self.dz_note_text, self.dz_note_until = "Press STOP first: designs only change while SAFE", time.monotonic() + 5
+            return
+        send(cmd)
+
+    def design_pick(self, i):
+        if i < len(self.dz_designs):
+            self.design_send("design:" + self.dz_designs[i]["id"])
+
+    def design_step(self, key, d):
+        cur = next((x for x in self.dz_designs if x["id"] == self.dz_active), None)
+        if cur is not None:
+            self.design_send(f"design_set:{key}:{round(cur[key] + 0.05 * d, 2)}")
+
+    def update_design(self, st):
+        c = self.c8
+        if st is None:
+            c.itemconfig(self.dz_state, text="OFFLINE", fill=AMBER)
+            c.itemconfig(self.dz_msg, text="ROV program not running")
+            return
+        c.itemconfig(self.dz_state, text="ARMED" if st["armed"] else "SAFE", fill=GREEN if st["armed"] else RED)
+        self.dz_designs = st.get("designs") or []
+        self.dz_active = st.get("design")
+        for i, (rect, name) in enumerate(self.dz_rows):
+            d = self.dz_designs[i] if i < len(self.dz_designs) else None
+            c.itemconfig(name, text=d["name"].upper() if d else "")
+            c.itemconfig(rect, fill=BLUE if d and d["id"] == self.dz_active else PANEL)
+        cur = next((x for x in self.dz_designs if x["id"] == self.dz_active), None)
+        c.itemconfig(self.dz_title, text=cur["name"].upper() if cur else "")
+        c.itemconfig(self.dz_note, text=cur.get("note", "") if cur else "")
+        for key, item in self.dz_vals.items():
+            c.itemconfig(item, text=f"{cur[key]:.2f}" if cur else "--")
+        note = self.dz_note_text if time.monotonic() < self.dz_note_until else ""
+        c.itemconfig(self.dz_msg, text=short(note or st.get("msg", ""), 60))
 
     # ------------------------------------------------------------ extras page (keyboard drive, arm sound)
     def toggle(self, c, x0, y0, tag, action):
@@ -1749,6 +1832,7 @@ class Dashboard:
         self.camera_policy()
         self.update_autopilot(st, ap)
         self.update_extras(st)
+        self.update_design(st)
         self.update_setup(st)
         self.update_camera(st)
         self.update_profiles_page(st)

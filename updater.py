@@ -24,7 +24,7 @@ BRANCH = "main"
 HERE = os.path.dirname(os.path.abspath(__file__))
 VERSION_FILE = os.path.join(HERE, "VERSION")
 # your settings: never overwritten by an update
-KEEP = {"config.toml", "profiles.json", "camera.json", "autopilot.json", "mission.json", "tune.txt", "keymap.json",
+KEEP = {"config.toml", "profiles.json", "designs.json", "camera.json", "autopilot.json", "mission.json", "tune.txt", "keymap.json",
         "VERSION", ".mega-firmware"}
 CHECK_EVERY = 30 * 60
 UA = {"User-Agent": "rov-updater"}
