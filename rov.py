@@ -801,17 +801,17 @@ def may_be_gamepad(path, button):
 def find_gamepad(preferred):
     """Pick the best connected gamepad. Returns Gamepad or None."""
     from evdev import InputDevice, list_devices, ecodes as e
-    devices = {}                                     # device -> what it can do
+    devices = []                                     # (device, what it can do)
     for path in list_devices():
         if not may_be_gamepad(path, e.BTN_SOUTH):
             continue
         try:
             d = InputDevice(path)
-            devices[d] = d.capabilities()
+            devices.append((d, d.capabilities()))
         except OSError:
             pass
     pads, motions = [], []
-    for d, caps in devices.items():
+    for d, caps in devices:
         keys = caps.get(e.EV_KEY, [])
         abs_codes = [c for c, _ in caps.get(e.EV_ABS, [])]
         if "Motion Sensors" in d.name:
@@ -830,7 +830,7 @@ def find_gamepad(preferred):
     motion = None
     if chosen and chosen.uniq:
         motion = next((m for m in motions if m.uniq == chosen.uniq), None)
-    for d in devices:
+    for d, _ in devices:
         if d is not chosen and d is not motion:
             d.close()
     try:
@@ -848,6 +848,7 @@ class PadFinder(threading.Thread):
         self.preferred = preferred
         self.wanted = threading.Event()
         self.pad = None
+        self.problem = ""         # logged once, not every second
 
     def run(self):
         while True:
@@ -856,7 +857,9 @@ class PadFinder(threading.Thread):
                 try:
                     self.pad = find_gamepad(self.preferred)
                 except Exception as ex:              # never let one odd device end the search
-                    log.warning(f"looking for a controller: {ex}")
+                    if str(ex) != self.problem:
+                        log.exception("looking for a controller failed")
+                    self.problem = str(ex)
             time.sleep(1.0)
 
     def take(self):

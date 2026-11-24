@@ -232,6 +232,40 @@ class ProfileTests(unittest.TestCase):
             self.rov.run()
         self.assertIs(self.rov.pad, pad)
 
+    def test_a_dualsense_is_found_with_its_motion_sensors(self):
+        try:
+            import evdev
+            from evdev import ecodes as e
+        except ImportError:
+            self.skipTest("evdev is not installed")
+        info = evdev.AbsInfo(value=128, min=0, max=255, fuzz=0, flat=0, resolution=0)
+        sticks = [(code, info) for code in (e.ABS_X, e.ABS_Y, e.ABS_Z, e.ABS_RX, e.ABS_RY, e.ABS_RZ)]
+
+        class Device:                          # like evdev's: can be compared, so it can't be a dictionary key
+            def __init__(self, path):
+                self.path, self.closed, self.fd, self.uniq = path, False, 1, "aa:bb"
+                self.name = {"/pad": "DualSense Wireless Controller", "/motion": "DualSense Motion Sensors",
+                             "/touch": "DualSense Touchpad"}[path]
+
+            def __eq__(self, other):
+                return self is other
+
+            def capabilities(self):
+                return {e.EV_ABS: sticks, **({e.EV_KEY: [e.BTN_SOUTH]} if self.path == "/pad" else {})}
+
+            def absinfo(self, code):
+                return info
+
+            def close(self):
+                self.closed = True
+        made = {}
+        with mock.patch.object(evdev, "list_devices", lambda: ["/touch", "/motion", "/pad"]), \
+                mock.patch.object(evdev, "InputDevice", lambda path: made.setdefault(path, Device(path))):
+            pad = rov.find_gamepad(["DualSense"])
+        self.assertEqual(pad.name, "DualSense Wireless Controller")
+        self.assertIs(pad.motion, made["/motion"])
+        self.assertEqual([path for path, d in made.items() if d.closed], ["/touch"])
+
     def test_an_error_in_the_loop_stops_the_motors_but_not_the_program(self):
         self.arm_keyboard()
         self.keys("w")
