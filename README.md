@@ -6,7 +6,7 @@ camera page as the Pi. It sends motor commands over **USB** to an **Arduino Mega
 same 4 BTS7960 boards.
 
 ```
-PS5 controller --Bluetooth/USB--> Laptop (rov.py + dashboard) --USB--> Arduino Mega --> 4x BTS7960 --> thrusters
+PS5 controller --Bluetooth/USB--> Laptop (ROV Backup app) --USB--> Arduino Mega --> 4x BTS7960 --> thrusters
 ```
 
 ## Screenshots
@@ -28,8 +28,8 @@ The same dashboard as on the Pi, with simulated ROV data; the camera picture is 
 | File | What it is |
 |---|---|
 | `rov_mega/rov_mega.ino` | Mega firmware (upload once) |
-| `rov.py` | motor program (controller → motors), same as the Pi's but outputs to the Mega |
-| `rov_gui.py` | starts the dashboard (pygame, any window size); its code is in `dashboard/`, the same as the Pi's |
+| `rov_gui.py` | **the app**: opens the window (code in `dashboard/`) and runs the motor program. Nothing else to start |
+| `rov.py` | motor program (controller → motors), same as the Pi's but outputs to the Mega; the app starts and stops it |
 | `config.toml` | Mega pins, motor jobs/flips (copied from the Pi) |
 | `profiles.json` | drive profiles (copied from the Pi) |
 | `designs.json` | your changes to the frame-design trims (made on the MOTORS page; not in the repo) |
@@ -95,7 +95,8 @@ controller profile, **P** = next keyboard profile, or pick one from the PROFILE 
 **PROFILES (F4)** makes, copies, renames, deletes and edits them; **USE** puts one in use. Changes are saved at once.
 
 **Keyboard profiles** (built in: **Keys WASD** and **Keys arrows**): W/S forward/back, A/D turn, Space up, Shift down,
-R/F tilt, E/Q speed, **hold Enter = ARM**, **Esc = STOP**. Keys drive on DRIVE and CAMERA. If the window closes, freezes
+R/F tilt, E/Q speed, **hold Enter = ARM**, **Esc = STOP**. **A key is full power at once**: no ramp, and keyboard
+profiles start at 100 % speed (E/Q lower it; `keyboard_speed_level` and `keyboard_ramp_per_second` in `config.toml`). Keys drive on DRIVE and CAMERA. If the window closes, freezes
 or loses the keyboard for 0.5 s, **the motors disarm**. The old KEYBOARD DRIVE switch is gone: if it was on, the update
 puts a keyboard profile in use.
 
@@ -106,7 +107,7 @@ puts a keyboard profile in use.
 | **Esc** | STOP, always. If it was already SAFE it also goes back |
 | F1-F6 | DRIVE, CAMERA, AUTOPILOT, PROFILES, MOTORS, SYSTEM (F2 again: full-screen video) |
 | arrows, Tab / Enter / Backspace | move the focus ring / use / back |
-| ← → on a value | change it |
+| + − on a value or list | change it (arrows only ever move) |
 | P, + −, C, 1-5, 0 | on DRIVE and CAMERA: keyboard profile, speed, camera, autopilot mode, mode off |
 | Space | on DRIVE and CAMERA: STOP, unless the keyboard profile uses it |
 | F10, F11, F12 | list of keys, full screen / window, frame rate |
@@ -115,7 +116,8 @@ With a keyboard profile, keys drive on DRIVE and CAMERA until you press **Tab**;
 **Backspace**. On the other pages they never drive.
 
 It opens in a window you can resize. `bash run.sh --fullscreen` for full screen, `--size 1600x960` for another window
-size, `--fps 60` to limit the frame rate (saves battery), `--page camera` to start on another page.
+size, `--fps 60` to limit the frame rate (saves battery), `--page camera` to start on another page. **`--dry-run`** tries it
+without a Mega. It is one app: closing the window stops the motor program too, and a second copy refuses to open.
 
 **Arm sound:** when armed, the motors play **an FPV-drone style arming sound (5 s)** (no
 speaker: a tiny audio-frequency PWM makes the motors whistle). **Touch any control and it stops at once** so you can
@@ -132,7 +134,7 @@ colour and **RED / GREEN / BLUE** on their own (water makes things blue-green: t
 It changes live and is saved in `camera.json`. **FULL**: full-screen video; STOP and ARMED/SAFE stay at the sides.
 
 **Camera:** plug the capture card into the laptop. It's picked automatically (the laptop's own webcam is skipped).
-Wrong camera? Change it with the **◀ name ▶** box above STOP on the camera page (click the name for the whole list); the
+Wrong camera? Change it with the **− name +** box above STOP on the camera page (click the name for the whole list); the
 choice is remembered (`camera.json`). (`device = "/dev/video2"` under `[camera]` in `config.toml` still forces one.)
 
 **MOTORS (F5)** (only while SAFE): **FLIP** reverses a motor that pushes the wrong way. **FRAME** picks the frame on the
@@ -144,10 +146,11 @@ robot: **V13 ORIGINAL** (no trim: the default) or **NEW FRAME** (the pool-noodle
 - Won't arm until the Mega has answered ("⚠ Arduino Mega not found" is shown otherwise).
 - **The Mega stops all motors by itself if the laptop goes quiet for 0.3 s**: app closed, laptop crash,
   USB unplugged.
-- The laptop disarms if the Mega stops answering, the controller disconnects, or its Bluetooth link goes quiet.
+- The laptop disarms if the Mega stops answering, restarts or switches its motors off by itself, the controller disconnects, or its Bluetooth link goes quiet.
 - After any of these you must arm again (OPTIONS, or hold Enter with a keyboard profile).
 
 ## Troubleshooting
+- `rov.log` in the app's folder says what happened. Identify the motors: close the app, then `python3 rov.py --test`.
 - "No permission for /dev/ttyACM0": you didn't log out/in after `install.sh`.
 - "No answer from /dev/ttyACM0": the firmware isn't uploaded. Run `upload-mega.sh`.
 - Controller not seen: `python3 rov.py --list` lists input devices.

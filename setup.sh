@@ -14,7 +14,7 @@ set -euo pipefail
 REPO="codemastervy/underwater-rov-backup"
 BRANCH="${ROV_BRANCH:-main}"
 DIR="$HOME/underwater-rov-backup"
-KEEP=(config.toml profiles.json camera.json autopilot.json mission.json tune.txt keymap.json)
+KEEP=(config.toml profiles.json designs.json camera.json autopilot.json mission.json screen.json tune.txt keymap.json)
 
 if [ "$(id -u)" -eq 0 ]; then
   echo "Run this as your normal user (not with sudo). It asks for your password when it needs it."
@@ -25,7 +25,7 @@ command -v pacman >/dev/null || { echo "This is for EndeavourOS / Arch Linux (pa
 if [ -f "$DIR/rov.py" ]; then MODE=update; else MODE=install; fi
 echo "==> ROV backup setup: $MODE"
 
-if pgrep -f "python3 rov.py --config" >/dev/null || pgrep -f "python3 rov_gui.py" >/dev/null; then
+if pgrep -f "^[^ ]*python[0-9.]* ([^ ]*/)?rov(_gui)?\.py( |$)" >/dev/null; then
   echo "Close the ROV Backup app first, then run this again."
   exit 1
 fi

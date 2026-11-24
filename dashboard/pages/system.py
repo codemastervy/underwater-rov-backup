@@ -95,7 +95,7 @@ class SystemPage(Page):
         if status.online:
             ui.paragraph(status.output, text, BODY, GREEN if status.output_ok else AMBER)
         else:
-            ui.paragraph("The ROV program isn't running.", text, BODY, AMBER)
-        if ui.button(close, "CLOSE DASHBOARD", size=BODY):
-            self.app.open_dialog(ConfirmDialog(self.app, "Close the dashboard?", "The motors stop.", "CLOSE",
+            ui.paragraph(self.app.message()[0], text, BODY, AMBER)
+        if ui.button(close, "CLOSE THE APP", size=BODY):
+            self.app.open_dialog(ConfirmDialog(self.app, "Close the app?", "The motors stop.", "CLOSE",
                                                self.app.quit))

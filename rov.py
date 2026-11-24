@@ -19,6 +19,7 @@ Profiles (PROFILES page on the screen): exactly one is in use, and its type deci
   Controller profile  what the sticks, triggers and D-pad do. OPTIONS arms.
                       Built-in: Tank (stick per side) and Standard (drive+turn / up-down).
   Keyboard profile    which key does what. Holding Enter on the screen arms, P picks the next one.
+                      A key is full power at once, and the speed starts at 100% (keyboard_* in config.toml).
                       Built-in: Keys WASD (W/S forward/back, A/D turn, Space/Shift up/down, R/F tilt)
                       and Keys arrows.
   The dashboard sends the held keys; if it stops for 0.5 s (closed, frozen, or another window has the
@@ -36,19 +37,24 @@ on the SYSTEM page.
 Safety: starts disarmed; disarms on controller loss, heartbeat loss, panel switch off,
 or program exit. The BTS7960 enable line is only HIGH while armed.
 
-Usage:
-  python3 rov.py                  run (normally started by systemd)
+This is the motor program. The ROV app (rov_gui.py) starts it, watches it and stops it, in a process of its own,
+so a slow or crashed screen can't hold up the motors. By hand, with the app closed:
   python3 rov.py --test           spin each motor in turn to identify it
-  python3 rov.py --dry-run        no GPIO, print motor output (for testing a controller)
-  python3 rov.py --list           list input devices the Pi can see
+  python3 rov.py --dry-run        no motors, print what they would do (for testing a controller)
+  python3 rov.py --list           list input devices
 """
 import argparse
+import ctypes
+import fcntl
 import json
 import logging
+import math
 import os
 import select
 import signal
 import sys
+import tempfile
+import threading
 import time
 import tomllib
 
@@ -56,16 +62,45 @@ log = logging.getLogger("rov")
 HERE = os.path.dirname(os.path.abspath(__file__))
 AXES = ("surge", "yaw", "heave", "sway", "pitch")
 TICK = 0.02  # 50 Hz control loop
-STATUS_PATH = "/dev/shm/rov-status.json"   # read by the dashboard
-CMD_PATH = "/dev/shm/rov-cmd"              # written by the dashboard
-KEYS_PATH = "/dev/shm/rov-keys.json"       # keyboard profiles: keys held down, written by the dashboard
+
+
+def run_dir():
+    """Folder (in memory) for the files the dashboard and the motor program share. Private to this user, and
+    each --dry-run app has its own (ROV_RUN_DIR), so a try-out never talks to the motors of a running app."""
+    folder = os.environ.get("ROV_RUN_DIR")
+    if not folder:
+        base = os.environ.get("XDG_RUNTIME_DIR") or ""
+        folder = os.path.join(base, "rov-app") if os.path.isdir(base) and os.access(base, os.W_OK) \
+            else f"/dev/shm/rov-app-{os.getuid()}"
+    os.makedirs(folder, mode=0o700, exist_ok=True)
+    return folder
+
+
+def lock(name):
+    """Make sure only one program at a time does this job. Returns the lock (keep it), or None if it's taken."""
+    f = open(os.path.join(run_dir(), name + ".lock"), "w")
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        f.close()
+        return None
+    return f
+
+
+RUN_DIR = run_dir()
+STATUS_PATH = os.path.join(RUN_DIR, "status.json")   # read by the dashboard
+CMD_PATH = os.path.join(RUN_DIR, "cmd")              # written by the dashboard
+KEYS_PATH = os.path.join(RUN_DIR, "keys.json")       # keyboard profiles: keys held down, written by the dashboard
+VISION_PATH = os.path.join(RUN_DIR, "vision.json")   # camera autopilot results, written by the dashboard
+# Times in these files are time.monotonic(): the same clock in every program, and it doesn't jump when the
+# real time is set from the internet (a Pi has no clock of its own).
 
 # Keyboard profiles: which key does what (PROFILES page, in profiles.json).
 # action, label, motion axis, amount (speed_up / speed_down are handled by the dashboard)
 KEY_ACTIONS = [("forward", "Forward", "surge", 1.0), ("back", "Back", "surge", -1.0),
                ("left", "Turn left", "yaw", -1.0), ("right", "Turn right", "yaw", 1.0),
                ("up", "Up", "heave", 1.0), ("down", "Down", "heave", -1.0),
-               ("tilt_up", "Tilt nose up", "pitch", 0.6), ("tilt_down", "Tilt nose down", "pitch", -0.6),
+               ("tilt_up", "Tilt nose up", "pitch", 1.0), ("tilt_down", "Tilt nose down", "pitch", -1.0),
                ("speed_up", "Speed +", None, 0), ("speed_down", "Speed −", None, 0)]
 KEY_PRESETS = {
     "WASD": {"forward": "w", "back": "s", "left": "a", "right": "d", "up": "space", "down": "shift",
@@ -103,8 +138,6 @@ def key_axes(keymap):
 
 
 KEY_AXES = key_axes(KEY_PRESETS["WASD"])
-
-VISION_PATH = "/dev/shm/rov-vision.json"  # camera autopilot results, written by the dashboard
 
 # Motor "music": (frequency Hz, seconds); 0 Hz = silence.
 TUNES = {"beeps": [(1047, 0.10), (0, 0.03), (1319, 0.10), (0, 0.03), (1568, 0.20)]}
@@ -215,10 +248,25 @@ def profiles_path(config_path=None):
                         "profiles.json")
 
 
+def number(value, default, low, high):
+    """value as a number between low and high, or default if it isn't one."""
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return default
+    return max(low, min(high, value)) if math.isfinite(value) else default
+
+
+def entries(data, key):
+    """The list called key in loaded JSON (empty if it isn't there or isn't a list)."""
+    found = data.get(key) if isinstance(data, dict) else None
+    return found if isinstance(found, list) else []
+
+
 def clean_profiles(data):
     """Validate profiles loaded from JSON; drop anything malformed."""
     out = []
-    for p in (data or {}).get("profiles", []):
+    for p in entries(data, "profiles"):
         if not isinstance(p, dict) or not str(p.get("name", "")).strip():
             continue
         if p.get("type") == "keyboard":
@@ -230,10 +278,10 @@ def clean_profiles(data):
             out.append({"name": str(p["name"]).strip()[:24], "type": "keyboard", "keys": keys})
             continue
         m = {}
-        for k, v in (p.get("map") or {}).items():
+        for k, v in (p["map"] if isinstance(p.get("map"), dict) else {}).items():
             if k in INPUTS and isinstance(v, dict) and v.get("action") in ACTIONS:
                 m[k] = {"action": v["action"], "invert": bool(v.get("invert", False)),
-                        "power": max(0.0, min(1.0, float(v.get("power", 1.0))))}
+                        "power": number(v.get("power"), 1.0, 0.0, 1.0)}
         out.append({"name": str(p["name"]).strip()[:24], "type": "controller", "map": m})
     return out
 
@@ -290,7 +338,10 @@ def designs_path(config_path=None):
 
 def design_value(key, value):
     lo, hi = DESIGN_LIMITS[key]
-    return round(max(lo, min(hi, float(value))), 2)
+    value = float(value)
+    if not math.isfinite(value):
+        raise ValueError("not a number")
+    return round(max(lo, min(hi, value)), 2)
 
 
 def load_designs(config_path=None):
@@ -331,7 +382,7 @@ class LgpioBackend:
 
     def __init__(self, chip, freq):
         # lgpio creates a notify pipe in its working dir; the default (cwd) may be
-        # read-only (e.g. "/" under systemd), so point it somewhere writable.
+        # read-only (e.g. "/"), so point it somewhere writable.
         if not os.access(os.environ.get("LG_WD", os.getcwd()), os.W_OK):
             os.environ["LG_WD"] = HERE if os.access(HERE, os.W_OK) else "/tmp"
         import lgpio
@@ -400,6 +451,8 @@ class MegaBackend:
         self.next_try = 0.0
         self.rx = b""
         self.next_ping = 0.0
+        self.fault = ""           # the Mega has switched the motors off by itself (why)
+        self.next_warning = 0.0
         self.no_answer = None     # port that was open but never answered (firmware missing?)
         self.desc = "Arduino Mega not found - plug in its USB cable"
 
@@ -451,7 +504,7 @@ class MegaBackend:
             self.desc = "Arduino Mega not found - plug in its USB cable"
             return
         try:
-            self.ser = self.serial.Serial(port, self.baud, timeout=0, write_timeout=0.05)
+            self.ser = self.serial.Serial(port, self.baud, timeout=0, write_timeout=0.05, exclusive=True)
             self.port = port
             self.opened_at = time.monotonic()
             self.last_rx = 0.0
@@ -487,6 +540,7 @@ class MegaBackend:
             else f"F {self.en_pin} {self.en_val if self.ready() else 0} "
         frame = head + " ".join(
             f"{p}:{round(d * 2.55)}" for p, d in sorted(self.duty.items())) + "\n"
+        data = b""
         try:
             data = self.ser.read(256)
             # Only talk once the Mega has said hello: data sent while its bootloader runs
@@ -499,7 +553,7 @@ class MegaBackend:
                 self.next_ping = time.monotonic() + 1.0
                 self.ser.write(b"PING\n")
         except self.serial.SerialTimeoutException:
-            data = b""                            # USB busy: skip this frame, the next one follows in 20 ms
+            pass                                  # USB busy: skip this frame, the next one follows in 20 ms
         except (OSError, self.serial.SerialException) as ex:
             self.drop(str(ex))
             return
@@ -508,11 +562,14 @@ class MegaBackend:
             *lines, self.rx = self.rx.split(b"\n")
             for line in lines:
                 text = line.decode(errors="replace").strip()
+                if text in ("ROV-MEGA READY", "TIMEOUT") and self.last_rx:
+                    self.fault = "Mega restarted" if text != "TIMEOUT" else "the Mega heard nothing for 0.3 s"
                 if text in ("OK", "ROV-MEGA READY", "PONG", "TIMEOUT"):
                     self.last_rx = time.monotonic()
                     self.no_answer = None
                     self.desc = f"Mega OK on {self.port}"
-                elif text.startswith("ERR"):
+                elif text.startswith("ERR") and time.monotonic() >= self.next_warning:
+                    self.next_warning = time.monotonic() + 5.0
                     log.warning(f"Mega: {text}")
         if self.last_rx and time.monotonic() - self.last_rx > 1.5:
             self.drop("no reply for 1.5 s")
@@ -671,6 +728,15 @@ class Gamepad:
             self.code_map[e.ABS_GAS] = "r2"
         if e.ABS_BRAKE in caps:
             self.code_map[e.ABS_BRAKE] = "l2"
+        if e.ABS_GAS in caps and e.ABS_BRAKE in caps and e.ABS_RX not in caps:
+            self.code_map[e.ABS_Z], self.code_map[e.ABS_RZ] = "rx", "ry"     # the right stick on those pads
+        self.resync()
+
+    def resync(self):
+        """Read where every stick and trigger is now (at the start, or when Linux has dropped events)."""
+        for code, name in self.code_map.items():
+            if code in self.absinfo:
+                self.axes[name] = self.norm(code, self.dev.absinfo(code).value)
 
     def fds(self):
         return [self.dev.fd] + ([self.motion.fd] if self.motion else [])
@@ -689,13 +755,19 @@ class Gamepad:
     def read(self, fd):
         """Returns list of pressed button codes. Raises OSError when disconnected."""
         presses = []
-        if self.motion and fd == self.motion.fd:
-            for _ in self.motion.read():
-                pass
-            self.last_motion = time.monotonic()
+        try:
+            if self.motion and fd == self.motion.fd:
+                for _ in self.motion.read():
+                    pass
+                self.last_motion = time.monotonic()
+                return presses
+            events = list(self.dev.read())
+        except BlockingIOError:            # nothing there after all
             return presses
-        for ev in self.dev.read():
-            if ev.type == self.e.EV_ABS and ev.code in self.code_map:
+        for ev in events:
+            if ev.type == self.e.EV_SYN and ev.code == self.e.SYN_DROPPED:
+                self.resync()
+            elif ev.type == self.e.EV_ABS and ev.code in self.code_map:
                 self.axes[self.code_map[ev.code]] = self.norm(ev.code, ev.value)
             elif ev.type == self.e.EV_KEY and ev.value == 1:
                 presses.append(ev.code)
@@ -710,18 +782,36 @@ class Gamepad:
                     pass
 
 
+def may_be_gamepad(path, button):
+    """Does Linux list a gamepad button (or motion sensors) for this input device? Asking /sys takes no time;
+    opening and closing every keyboard, mouse and lid switch takes about a second."""
+    folder = os.path.join("/sys/class/input", os.path.basename(path), "device")
+    try:
+        with open(os.path.join(folder, "name")) as f:
+            if "Motion Sensors" in f.read():
+                return True
+        with open(os.path.join(folder, "capabilities", "key")) as f:
+            words = [int(word, 16) for word in f.read().split()][::-1]     # 64 (or 32) buttons per word
+    except (OSError, ValueError):
+        return True
+    bits = 64 if sys.maxsize > 2 ** 32 else 32
+    return button // bits < len(words) and bool(words[button // bits] >> button % bits & 1)
+
+
 def find_gamepad(preferred):
     """Pick the best connected gamepad. Returns Gamepad or None."""
     from evdev import InputDevice, list_devices, ecodes as e
-    devices = []
+    devices = {}                                     # device -> what it can do
     for path in list_devices():
+        if not may_be_gamepad(path, e.BTN_SOUTH):
+            continue
         try:
-            devices.append(InputDevice(path))
+            d = InputDevice(path)
+            devices[d] = d.capabilities()
         except OSError:
             pass
     pads, motions = [], []
-    for d in devices:
-        caps = d.capabilities()
+    for d, caps in devices.items():
         keys = caps.get(e.EV_KEY, [])
         abs_codes = [c for c, _ in caps.get(e.EV_ABS, [])]
         if "Motion Sensors" in d.name:
@@ -743,7 +833,40 @@ def find_gamepad(preferred):
     for d in devices:
         if d is not chosen and d is not motion:
             d.close()
-    return Gamepad(chosen, motion) if chosen else None
+    try:
+        return Gamepad(chosen, motion) if chosen else None
+    except OSError:                                  # unplugged again
+        return None
+
+
+class PadFinder(threading.Thread):
+    """Looks for a controller in the background: opening input devices can take a while, and the motors can't
+    wait for that."""
+
+    def __init__(self, preferred):
+        super().__init__(daemon=True)
+        self.preferred = preferred
+        self.wanted = threading.Event()
+        self.pad = None
+
+    def run(self):
+        while True:
+            self.wanted.wait()
+            if self.pad is None:
+                try:
+                    self.pad = find_gamepad(self.preferred)
+                except Exception as ex:              # never let one odd device end the search
+                    log.warning(f"looking for a controller: {ex}")
+            time.sleep(1.0)
+
+    def take(self):
+        """The controller that was found, or None (then it keeps looking)."""
+        pad, self.pad = self.pad, None
+        if pad:
+            self.wanted.clear()
+        else:
+            self.wanted.set()
+        return pad
 
 
 # --------------------------------------------------------------------------- autopilot
@@ -765,6 +888,7 @@ MISSION_ACTIONS = {"forward": {"surge": 1.0}, "back": {"surge": -1.0}, "up": {"h
                    "down": {"heave": -1.0}, "turn_left": {"yaw": -1.0}, "turn_right": {"yaw": 1.0},
                    "tilt_up": {"pitch": 1.0}, "tilt_down": {"pitch": -1.0}, "hover": {}}
 MISSION_ORDER = list(MISSION_ACTIONS)
+MISSION_MOST = 8           # steps (as many as the screen can show)
 DEFAULT_MISSION = [{"do": "down", "power": 0.4, "secs": 2.0}, {"do": "forward", "power": 0.4, "secs": 4.0},
                    {"do": "turn_right", "power": 0.4, "secs": 1.5}, {"do": "forward", "power": 0.4, "secs": 3.0},
                    {"do": "hover", "power": 0.0, "secs": 2.0}]
@@ -774,13 +898,10 @@ PILOT_ACTIVE = 0.15       # pilot input above this = the pilot wants control
 
 def clean_mission(data):
     steps = []
-    for st in (data or {}).get("steps", [])[:12]:
-        try:
-            if st["do"] in MISSION_ACTIONS:
-                steps.append({"do": st["do"], "power": max(0.0, min(1.0, float(st.get("power", 0.4)))),
-                              "secs": max(0.5, min(60.0, float(st.get("secs", 1.0))))})
-        except (KeyError, TypeError, ValueError):
-            pass
+    for st in entries(data, "steps")[:MISSION_MOST]:
+        if isinstance(st, dict) and st.get("do") in MISSION_ORDER:
+            steps.append({"do": st["do"], "power": number(st.get("power"), 0.4, 0.0, 1.0),
+                          "secs": number(st.get("secs"), 1.0, 0.5, 60.0)})
     return steps
 
 
@@ -810,8 +931,8 @@ class Autopilot:
                 saved = json.load(f)
             for k, v in saved.items():
                 if k in AP_SETTINGS:
-                    _, lo, hi, _ = AP_SETTINGS[k]
-                    self.s[k] = max(lo, min(hi, float(v)))
+                    default, lo, hi, _ = AP_SETTINGS[k]
+                    self.s[k] = number(v, default, lo, hi)
                 elif k in AP_CHOICES and v in AP_COLOURS:
                     self.s[k] = v
                 elif k == "target_pick":
@@ -855,7 +976,7 @@ class Autopilot:
             return
         if key in AP_SETTINGS:
             _, lo, hi, _ = AP_SETTINGS[key]
-            self.s[key] = round(max(lo, min(hi, float(value))), 3)
+            self.s[key] = round(number(value, self.s[key], lo, hi), 3)
         elif key in AP_CHOICES and value in AP_COLOURS:
             self.s[key] = value
         else:
@@ -930,7 +1051,8 @@ class Autopilot:
                 v = json.load(f)
         except (OSError, ValueError):
             return None
-        if v.get("mode") != self.mode or abs(time.time() - float(v.get("ts", 0))) > 0.5:
+        if not isinstance(v, dict) or v.get("mode") != self.mode \
+                or abs(time.monotonic() - number(v.get("ts"), 0.0, 0.0, math.inf)) > 0.5:
             return None
         if v.get("epoch", self.epoch) != self.epoch and self.mode == "heading":
             return None
@@ -1049,7 +1171,10 @@ class ROV:
         self.expo = c.get("expo", 0.35)
         self.ramp_rate = c.get("ramp_per_second", 3.0)
         self.levels = c.get("speed_levels", [0.25, 0.5, 0.75, 1.0])
-        self.level = min(c.get("start_speed_level", 1), len(self.levels) - 1)
+        top = len(self.levels) - 1
+        self.speed_level = {"controller": max(0, min(c.get("start_speed_level", 1), top)),
+                            "keyboard": max(0, min(c.get("keyboard_speed_level", top), top))}
+        self.key_ramp = c.get("keyboard_ramp_per_second", 0) or math.inf       # 0 = at once
         self.min_duty = c.get("min_duty", 0)
         self.last_used = {}   # profile type -> name of the one used last
         self.load_profiles(c.get("drive_profile", "Standard"))
@@ -1069,6 +1194,7 @@ class ROV:
         self.pad = None
         self.running = True
         self.status_msg = ""
+        self.last_error = ""
         self.kbd_keys = set()
         self.kbd_live = False
         self.sound_on = bool(c.get("arm_sound", True))
@@ -1157,7 +1283,10 @@ class ROV:
             except Exception as ex:
                 log.error(f"failed to stop motor {t.name}: {ex}")
         if self.led_pin >= 0:
-            self.gpio.write(self.led_pin, 0)
+            try:
+                self.gpio.write(self.led_pin, 0)
+            except Exception as ex:
+                log.error(f"failed to switch the LED off: {ex}")
         if self.armed:
             self.say(f"DISARMED ({why})")
         self.armed = False
@@ -1304,9 +1433,11 @@ class ROV:
                 if line.split("=")[0].strip() == key:
                     lines[k] = f"{key} = {value}"
                     return True
-            if section not in lines:
+            heads = [line.split("#")[0].strip() for line in lines]
+            if section not in heads:
                 lines += ["", section]
-            lines.insert(lines.index(section) + 1, f"{key} = {value}")
+                heads += ["", section]
+            lines.insert(heads.index(section) + 1, f"{key} = {value}")
             return True
         return self.edit_config(edit)
 
@@ -1363,6 +1494,15 @@ class ROV:
         save_designs(self.designs, self.config_path)
         self.say(f"{d['name']}: back to the design's values")
 
+    @property
+    def level(self):
+        """The speed level in use: controller and keyboard profiles each have their own."""
+        return self.speed_level[self.profile()["type"]]
+
+    @level.setter
+    def level(self, level):
+        self.speed_level[self.profile()["type"]] = level
+
     def change_speed(self, d):
         self.level = max(0, min(self.level + d, len(self.levels) - 1))
         self.say(f"Speed {int(self.levels[self.level] * 100)}%")
@@ -1415,10 +1555,10 @@ class ROV:
                 st = json.load(f)
         except (OSError, ValueError):
             return
-        if abs(time.time() - float(st.get("ts", 0))) > self.hb_timeout:
+        if not isinstance(st, dict) or abs(time.monotonic() - number(st.get("ts"), 0.0, 0.0, math.inf)) > self.hb_timeout:
             return
         self.kbd_live = True
-        self.kbd_keys = {k for k in st.get("keys", []) if k in self.key_axes}
+        self.kbd_keys = {k for k in entries(st, "keys") if k in self.key_axes}
 
     # ---- arm sound (motor music) ----
     def set_sound(self, on=None, volume=None):
@@ -1522,18 +1662,18 @@ class ROV:
 
     # ---- loop ----
     def run(self):
-        next_scan = 0.0
+        finder = PadFinder(self.preferred)
+        finder.start()
         next_tick = time.monotonic()
         next_print = 0.0
         tty = sys.stdout.isatty()
         self.say("Hold Enter to arm" if self.drives("keyboard")
                  else "Waiting for controller (press PS button to connect)...")
         while self.running:
-            now = time.monotonic()
-            if self.pad is None and now >= next_scan:
-                next_scan = now + 1.0
-                self.pad = find_gamepad(self.preferred)
+            if self.pad is None:
+                self.pad = finder.take()
                 if self.pad:
+                    self.pad.last_motion = time.monotonic()
                     hb = "heartbeat ok" if self.pad.motion else "no heartbeat available"
                     self.say(f"Controller connected: {self.pad.name} ({hb}). Press OPTIONS to arm.")
 
@@ -1554,11 +1694,23 @@ class ROV:
             next_tick += TICK
             if next_tick < time.monotonic():  # fell behind, don't try to catch up
                 next_tick = time.monotonic() + TICK
-            self.tick()
+            self.safe_tick()
             self.write_status_file()
             if tty and time.monotonic() >= next_print:
                 next_print = time.monotonic() + 0.2
                 self.print_status()
+
+    def safe_tick(self):
+        """One tick. Anything unexpected stops the motors, but not the program."""
+        try:
+            self.tick()
+        except Exception as ex:
+            text = f"{type(ex).__name__}: {ex}"
+            if text != self.last_error:          # once, not 50 times a second
+                log.exception("error in the control loop")
+            self.last_error = text
+            self.disarm("program error")
+            self.say(f"Program error ({text}), see rov.log")
 
     def tick(self):
         try:
@@ -1572,6 +1724,9 @@ class ROV:
         self.read_keys()
         if self.armed and not self.output_ready():
             self.disarm("Mega connection lost")
+        fault, self.gpio.fault = getattr(self.gpio, "fault", ""), ""
+        if fault and (self.armed or self.tune):
+            self.disarm(fault)           # its motors went off: they only start again after arming
         if self.pad and self.pad.motion and time.monotonic() - self.pad.last_motion > self.hb_timeout:
             self.lose_pad("heartbeat timeout")
         if self.armed and not self.switch_on():
@@ -1590,7 +1745,8 @@ class ROV:
         self.last_pilot = self.command()
         cmd = self.ap.apply(self.last_pilot)
         targets = mix(self.thrusters, {a: max(-1.0, min(1.0, v)) for a, v in cmd.items()}, self.levels[self.level])
-        step = self.ramp_rate * TICK
+        # keys are full power at once; sticks and the autopilot are smoothed
+        step = (self.key_ramp if self.drives("keyboard") and not self.ap.mode else self.ramp_rate) * TICK
         for t, target in zip(self.thrusters, targets):
             t.apply(self.gpio, ramp(t.value, target, step), self.min_duty)
 
@@ -1598,7 +1754,7 @@ class ROV:
         """JSON status for the dashboard, written every tick."""
         prof = self.profile()
         st = {
-            "ts": time.time(),
+            "ts": time.monotonic(),
             "armed": self.armed,
             "controller": self.pad.name if self.pad else None,
             "heartbeat": bool(self.pad and self.pad.motion),
@@ -1741,18 +1897,37 @@ class ROV:
 # --------------------------------------------------------------------------- modes
 
 def motor_test(rov):
+    def hold(done):
+        """Keep talking to the Mega until done(): it switches the motors off when it hears nothing."""
+        while not done():
+            getattr(rov.gpio, "flush", lambda: None)()
+            time.sleep(TICK)
+
+    def wait(seconds):
+        end = time.monotonic() + seconds
+        hold(lambda: time.monotonic() >= end)
+        if not rov.output_ready():
+            raise SystemExit(rov.gpio.describe())
+
     print("\nMOTOR TEST - each motor runs at 30% forward, then reverse.")
     print("Keep hands and cables clear of the props. Ctrl+C to stop at any time.\n")
-    rov.gpio.write(rov.enable_pin, 1)
+    give_up = time.monotonic() + 8
+    hold(lambda: rov.output_ready() or time.monotonic() >= give_up)
     try:
+        wait(0)
         for t in rov.thrusters:
-            input(f"Press Enter to test motor '{t.name}' (RPWM GPIO{t.rpwm}, LPWM GPIO{t.lpwm})...")
+            print(f"Press Enter to test motor '{t.name}' (RPWM pin {t.rpwm}, LPWM pin {t.lpwm})...", flush=True)
+            hold(lambda: select.select([sys.stdin], [], [], 0)[0])
+            if not sys.stdin.readline():
+                break
+            rov.gpio.write(rov.enable_pin, 1)
             for label, v in (("FORWARD (+)", 0.3), ("REVERSE (-)", -0.3)):
                 print(f"   {label}")
                 t.apply(rov.gpio, v, rov.min_duty)
-                time.sleep(1.5)
+                wait(1.5)
                 t.stop(rov.gpio)
-                time.sleep(0.5)
+                wait(0.5)
+            rov.gpio.write(rov.enable_pin, 0)
         print("\nDone. If a motor spun the wrong way set invert = true for it in config.toml.")
         print("If the wrong motor spun, swap the names/coefficients in config.toml.")
     finally:
@@ -1764,6 +1939,16 @@ def list_devices_cmd():
     for p in list_devices():
         d = InputDevice(p)
         print(f"{p:<20} {d.name:<45} uniq={d.uniq}")
+
+
+def stop_with_parent(pid):
+    """The motors must never outlive the app: Linux stops this program when the app is gone."""
+    try:
+        ctypes.CDLL("libc.so.6").prctl(1, signal.SIGTERM)       # PR_SET_PDEATHSIG
+    except (OSError, AttributeError):
+        pass
+    if os.getppid() != pid:
+        raise SystemExit("The app has already stopped")
 
 
 def load_config(path):
@@ -1780,6 +1965,7 @@ def main():
     ap.add_argument("--test", action="store_true", help="spin each motor to identify it")
     ap.add_argument("--dry-run", action="store_true", help="no GPIO; show what motors would do")
     ap.add_argument("--list", action="store_true", help="list input devices")
+    ap.add_argument("--app", type=int, default=0, help=argparse.SUPPRESS)     # the app's process id
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s",
@@ -1790,6 +1976,15 @@ def main():
     if args.list:
         return list_devices_cmd()
 
+    if args.app:
+        stop_with_parent(args.app)
+    elif args.dry_run:                       # a try-out: never share files with an app that drives real motors
+        folder = tempfile.mkdtemp(prefix="rov-dry-")
+        for name in ("STATUS", "CMD", "KEYS", "VISION"):
+            globals()[name + "_PATH"] = os.path.join(folder, name.lower())
+    held = args.dry_run or lock("motors")
+    if not held:
+        raise SystemExit("The motors are in use: close the ROV app first")
     cfg = load_config(args.config)
     g = cfg.get("gpio", {})
     out = cfg.get("output", {})
@@ -1803,8 +1998,8 @@ def main():
 
     def stop(*_):
         rov.running = False
-    signal.signal(signal.SIGTERM, stop)
-    signal.signal(signal.SIGINT, stop)
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(sig, stop)
 
     try:
         if args.test:

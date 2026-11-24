@@ -37,7 +37,7 @@ class VisionWorker(threading.Thread):
             else:
                 result = {"found": False}
                 time.sleep(0.07)
-            result.update(ts=time.time(), mode=status.ap_mode, epoch=status.ap_epoch)
+            result.update(ts=time.monotonic(), mode=status.ap_mode, epoch=status.ap_epoch)
             self.result = result
             self.link.send_vision(result)
 

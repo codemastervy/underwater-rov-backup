@@ -1,4 +1,4 @@
-"""The dashboard's end of the files it shares with rov.py in /dev/shm."""
+"""The dashboard's end of the files it shares with the motor program (rov.py), see rov.run_dir()."""
 import json
 import os
 import time
@@ -65,7 +65,7 @@ class RovLink:
                 self._seen = stamp
         except (OSError, ValueError):
             pass
-        if self.status.online and time.time() - self.status.ts > STALE:
+        if self.status.online and time.monotonic() - self.status.ts > STALE:
             self.status = Status()
         if not self.status.online:
             self._waiting.clear()
@@ -88,7 +88,7 @@ class RovLink:
 
     @staticmethod
     def send_keys(keys):
-        write_file(core.KEYS_PATH, json.dumps({"ts": time.time(), "keys": sorted(keys)}))
+        write_file(core.KEYS_PATH, json.dumps({"ts": time.monotonic(), "keys": sorted(keys)}))
 
     @staticmethod
     def send_vision(result):

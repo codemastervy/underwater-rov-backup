@@ -2,7 +2,8 @@
 that runs from top to bottom. Each one works with the mouse alone and with the keyboard alone:
 
   mouse     click, hold, drag, wheel
-  keyboard  arrows and Tab move the focus ring, Enter uses the widget in it, Left/Right change a value
+  keyboard  arrows and Tab move the focus ring, Enter uses the widget in it, + and - change its value.
+            Moving never changes anything, and the opposite arrow always leads back.
 """
 import time
 
@@ -27,6 +28,9 @@ FLASH = 0.12                 # seconds a pressed button stays lit
 REPEAT_AFTER, REPEAT_EVERY = 0.4, 0.09
 REPORT_BACK = 0.6            # seconds a chosen value is shown before rov.py's own value counts again
 ARROWS = ("up", "down", "left", "right")
+OPPOSITE = {"up": "down", "down": "up", "left": "right", "right": "left"}
+MORE, LESS = ("plus", "equal", "kp_add"), ("minus", "kp_subtract")
+WAY_BACK = 60                # steps the opposite arrows lead back over
 
 
 class Menu:
@@ -50,6 +54,8 @@ class UI(Painter):
         self.first = 0               # the widget that gets the focus first
         self.hint = ""
         self.widgets = []            # (id, rect) of everything that can be used this frame
+        self.has_value = False       # + and - change the widget in the focus ring
+        self._way = []               # (from, arrow, to): the way the focus came
         self.menu = None
         self._answer = None          # (id, value) picked in a menu
         self._grab = None            # (id, part) held by the mouse
@@ -63,14 +69,14 @@ class UI(Painter):
         self.surface, self.area, self.dt, self.now = surface, area, dt, time.monotonic()
         self.resize(area.size)
         self.widgets = []
-        self.hint = ""
+        self.hint, self.has_value = "", False
         self.live = self.menu is None
         if not self.held:
             self._grab = None
 
     def layer(self):
         """Start a dialog: only what is drawn from here on can be used."""
-        self.widgets, self.first = [], 0
+        self.widgets, self.first, self.has_value = [], 0, False
         self.live = self.menu is None
 
     def end(self):
@@ -80,15 +86,15 @@ class UI(Painter):
         if self.ring and ids:
             if self.focus not in ids:
                 self.focus = ids[min(self.first, len(ids) - 1)]
-            elif self.move:
-                self.focus = self._neighbour(ids)
+            elif self.move in (*ARROWS, "next", "prev"):
+                self.focus = self._step_focus(ids)
             self._draw_ring()
         self.click, self.move, self.enter, self.wheel = None, None, False, 0
 
     def key(self, key, shift, repeat):
         """A key that works the screen. True if it was one."""
-        move = {"tab": "prev" if shift else "next", "plus": "more", "equal": "more", "kp_add": "more",
-                "minus": "less", "kp_subtract": "less"}.get(key, key if key in ARROWS else None)
+        move = "more" if key in MORE else "less" if key in LESS else key if key in ARROWS else \
+            ("prev" if shift else "next") if key == "tab" else None
         if not move and key not in ("return", "kp_enter", "space"):
             return False
         if not self.ring:
@@ -146,6 +152,23 @@ class UI(Painter):
     def _choose(self, wid, value):
         self._chosen[wid] = (value, self.now + REPORT_BACK)
         return value
+
+    def _step_focus(self, ids):
+        """Where the arrow or Tab key leads: the opposite of the last arrow goes back to where that came from."""
+        if self.move not in ARROWS:
+            self._way.clear()
+            return self._neighbour(ids)
+        if self._way:
+            start, arrow, end = self._way[-1]
+            if end != self.focus:
+                self._way.clear()                      # the focus got here some other way
+            elif arrow == OPPOSITE[self.move] and start in ids:
+                self._way.pop()
+                return start
+        to = self._neighbour(ids)
+        if to != self.focus:
+            self._way = [*self._way[-WAY_BACK:], (self.focus, self.move, to)]
+        return to
 
     def _neighbour(self, ids):
         """The widget the arrow or Tab key leads to."""
@@ -250,6 +273,7 @@ class UI(Painter):
         """Shared by stepper, number and choice: the buttons, the keys and the wheel.
         Returns (steps, middle, focused, click in the middle)."""
         focused, click, hover = self._widget(wid, rect, hint) if enabled else (False, None, False)
+        self.has_value = self.has_value or focused
         active = self._grab[1] if self._grab and self._grab[0] == wid else None
         low, middle, high = self._ends(rect, names, enabled, active)
         steps = 0
@@ -259,14 +283,14 @@ class UI(Painter):
                     self._grab, self._repeat_at, steps = (wid, name), self.now + REPEAT_AFTER, step
         elif active in names and self._held_again():
             steps = -1 if active == names[0] else 1
-        steps += self._moved(focused, "right", "more") - self._moved(focused, "left", "less")
+        steps += self._moved(focused, "more") - self._moved(focused, "less")
         if hover and self.wheel:
             steps, self.wheel = steps + self.wheel, 0
         return steps, middle, focused, click if click and middle.collidepoint(click) else None
 
     def stepper(self, rect, text, wid, sub="", size=LABEL, enabled=True):
         """[-] text [+]. Returns the steps: -1, 0 or 1."""
-        steps, middle, _, _ = self._step(rect, wid, ("minus", "plus"), enabled, "← → change")
+        steps, middle, _, _ = self._step(rect, wid, ("minus", "plus"), enabled, "+ − change")
         ink = TEXT if enabled else FAINT
         if sub:
             height, below = self.line_height(size, True), self.line_height(SMALL)
@@ -280,7 +304,7 @@ class UI(Painter):
     def number(self, rect, value, low, high, step, show, wid, enabled=True):
         """[-] value [+] that can also be dragged. Returns the new value, or None."""
         value = self._latest(wid, value)
-        steps, middle, _, click = self._step(rect, wid, ("minus", "plus"), enabled, "← → change")
+        steps, middle, _, click = self._step(rect, wid, ("minus", "plus"), enabled, "+ − change")
         new = value + steps * step
         if click:
             self._grab = (wid, "drag")
@@ -302,9 +326,9 @@ class UI(Painter):
         return new
 
     def choice(self, rect, value, options, wid, color=TEXT, enabled=True):
-        """< value >, or click it for the whole list. options: [(value, label)]. Returns the new value, or None."""
+        """[-] value [+], or click it for the whole list. options: [(value, label)]. Returns the new value, or None."""
         value = self._latest(wid, value)
-        steps, middle, focused, click = self._step(rect, wid, ("left", "right"), enabled, "← → change · Enter list")
+        steps, middle, focused, click = self._step(rect, wid, ("minus", "plus"), enabled, "+ − change · Enter list")
         values = [v for v, _ in options]
         index = values.index(value) if value in values else 0
         new = values[(index + steps) % len(values)] if steps else None
@@ -361,16 +385,19 @@ class UI(Painter):
             self.close_menu()
 
     def listbox(self, rect, items, index, wid, row=32):
-        """A list of (label, tag). Returns (selected index, picked by click or Enter)."""
-        focused, click, hover = self._widget(wid, rect, "↑ ↓ choose · Enter select")
+        """A list of (label, tag). Returns (selected index, picked by click or Enter). + and - choose; in a menu,
+        where there is nothing else to move to, the arrows do too."""
+        menu = self.menu is not None
+        focused, click, hover = self._widget(wid, rect, "↑ ↓ choose · Enter select" if menu else "+ − choose")
+        self.has_value = self.has_value or focused
         height = self.px(row)
         shown = max(1, rect.h // height)
         last = max(0, len(items) - shown)
         before = index
-        if self._moved(focused and index < len(items) - 1, "down"):
-            index += 1
-        elif self._moved(focused and index > 0, "up"):
-            index -= 1
+        if self._moved(focused, "more", *(["down"] if menu else [])):
+            index = min(index + 1, len(items) - 1)
+        elif self._moved(focused, "less", *(["up"] if menu else [])):
+            index = max(index - 1, 0)
         top = self._scroll.get(wid, (0, None))[0]
         if hover and self.wheel:
             top, self.wheel = top - self.wheel, 0

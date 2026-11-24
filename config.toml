@@ -21,9 +21,11 @@ drive_profile = "Standard"   # profile in use: a controller profile (controller 
                              # profile (keyboard drives). Edited on the PROFILES page, stored in profiles.json.
 deadzone = 0.08
 expo = 0.35
-ramp_per_second = 3.0
+ramp_per_second = 3.0    # sticks: 3.0 = 0 to full in 0.33 s
+keyboard_ramp_per_second = 0   # keyboard profiles: 0 = a key is full power at once; 3.0 = smooth like the sticks
 speed_levels = [0.25, 0.5, 0.75, 1.0]
 start_speed_level = 1
+keyboard_speed_level = 3       # the same for keyboard profiles (3 = 100%)
 min_duty = 0
 heartbeat_timeout = 0.5
 invert_surge = false

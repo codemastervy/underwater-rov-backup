@@ -10,7 +10,7 @@ sudo pacman -S --needed --noconfirm python python-evdev python-pyserial python-n
 echo "==> Giving $USER access to game controllers (input) and the Arduino (uucp)"
 sudo usermod -aG input,uucp "$USER"
 
-echo "==> Turning on Bluetooth"
+echo "==> Turning on Bluetooth (the laptop's own; the ROV app itself has no services)"
 sudo systemctl enable --now bluetooth
 
 chmod +x "$DIR/run.sh" "$DIR/upload-mega.sh"
@@ -22,7 +22,7 @@ cat > ~/.local/share/applications/rov-backup.desktop <<EOF
 Type=Application
 Name=ROV Backup
 Comment=Drive the ROV from this laptop through the Arduino Mega
-Exec=$DIR/run.sh
+Exec="$DIR/run.sh"
 Icon=input-gaming
 Terminal=false
 StartupWMClass=rov-backup

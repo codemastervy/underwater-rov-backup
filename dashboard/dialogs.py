@@ -197,9 +197,9 @@ class KeyDialog(Dialog):
 class HelpDialog(Dialog):
     size = (780, 450)
     LEFT = (("Esc", "STOP (when safe: also back)"), ("F1 – F6", "open a page"), ("Arrows, Tab", "move around"),
-            ("Enter", "select"), ("← →", "change a value"), ("Backspace", "back"), ("F10", "this list"),
+            ("Enter", "select"), ("+  −", "change a value"), ("Backspace", "back"), ("F10", "this list"),
             ("F11", "full screen / window"), ("F12", "show frame rate"))
-    RIGHT = (("Hold Enter", "arm (keyboard profile)"), ("P", "next keyboard profile"), ("+  −", "speed"),
+    RIGHT = (("Hold Enter", "arm (keyboard profile)"), ("P", "next keyboard profile"), ("+  −", "speed (or the value in the ring)"),
              ("C", "camera on / off"), ("F2 again", "full-screen video"), ("1 – 5", "autopilot modes"),
              ("0", "autopilot mode off"), ("Space", "STOP (if the profile doesn't use it)"),
              ("Tab", "work the screen instead of driving"))

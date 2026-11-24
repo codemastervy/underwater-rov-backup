@@ -2,7 +2,7 @@
 
 The dashboard checks GitHub at start-up and every 30 minutes. When a newer version is there it
 shows "UPDATE READY"; UPDATE NOW on the SYSTEM page (only while SAFE) installs it and
-restarts the program. Your settings are never touched (motor flips, profiles, camera, autopilot,
+opens the app again. Your settings are never touched (motor flips, profiles, camera, autopilot,
 mission, arm tune).
 
 Laptop version: the files in this folder are replaced; then the app restarts by itself. If the Arduino
@@ -12,7 +12,6 @@ VERSION (next to this file) holds the GitHub commit the installed copy came from
 """
 import os
 import shutil
-import subprocess
 import tarfile
 import tempfile
 import threading
@@ -79,7 +78,9 @@ def copy_files(src, dest):
         for name in files:
             if rel == "." and name in KEEP and os.path.exists(os.path.join(dest, name)):
                 continue
-            shutil.copy2(os.path.join(root, name), os.path.join(dest, rel, name))
+            path = os.path.join(dest, rel, name)
+            shutil.copy2(os.path.join(root, name), path + ".new")
+            os.replace(path + ".new", path)      # in one go: never half a file, also not one that is running
 
 
 def startup_note():
@@ -130,6 +131,10 @@ class Updater:
 
     def check(self):
         if self.busy:
+            return
+        if os.path.exists(os.path.join(HERE, ".git")):      # never overwrite somebody's work
+            self.next_check = float("inf")
+            self.state, self.text = "current", "This is a git folder: update it with git pull"
             return
         self.busy = True
         self.next_check = time.monotonic() + CHECK_EVERY
@@ -195,13 +200,3 @@ def install_files(src, dest):
         if os.path.exists(p):
             os.chmod(p, 0o755)
     return notes
-
-
-def restart_after_update(argv):
-    """Start the new version: launch run.sh again (after this window has closed and run.sh has stopped
-    the old motor program), then close this window. The motors are off in between (SAFE)."""
-    import sys
-    args = " ".join("'" + a.replace("'", "'\\''") + "'" for a in argv[1:])
-    subprocess.Popen(["bash", "-c", f"sleep 3; exec bash '{HERE}/run.sh' {args}"], start_new_session=True,
-                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    sys.exit(0)

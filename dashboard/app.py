@@ -30,7 +30,7 @@ from .pages.profiles import ProfilesPage
 from .pages.system import SystemPage
 from .theme import (AMBER, BACKGROUND, BLACK, BODY, CARD, FAINT, GAP, GREEN, LABEL, MUTED, RED, RED_DARK, SMALL, TEXT,
                     TITLE, WHITE)
-from .ui import ARROWS, UI
+from .ui import ARROWS, LESS, MORE, UI
 from .vision_worker import VisionWorker
 
 try:
@@ -46,14 +46,18 @@ NEWS = 4.0               # seconds a message from the ROV program is shown befor
 
 
 class App:
-    def __init__(self, fullscreen=True, size=None, margins=None, fps=0, show_fps=False, page="drive"):
+    def __init__(self, fullscreen=True, size=None, margins=None, fps=0, show_fps=False, page="drive",
+                 program=None, helpers=()):
         pygame.display.init()
         pygame.font.init()
-        pygame.display.set_caption("ROV backup (Arduino Mega)")
+        pygame.display.set_caption("ROV Backup")
         pygame.key.set_repeat(350, 45)
         self.window_size, self.margins, self.fps, self.show_fps = size or screen.window_size(), margins, fps, show_fps
         self.saved_edge = screen.load_edge()
         self.set_fullscreen(fullscreen)
+        pygame.key.stop_text_input()       # only dialogs take text: elsewhere keys are just keys
+        self.program = program             # the motor program
+        self.helpers = helpers             # background jobs, started with the app
         self.clock = pygame.time.Clock()
         self.ui = UI()
         self.link = RovLink()
@@ -68,9 +72,11 @@ class App:
         self.events = deque()
         self.down = set()                  # keys held down
         self.running, self.focused = True, True
+        self.restart = False               # open the app again after closing it (an update)
         self._notice, self._notice_until = ("", None), 0.0
         self._news, self._news_until = "", 0.0
         self._view_toggle = None
+        self._stops = 0
         self._slow_at = self._restart_at = 0.0
         self.show(page)
 
@@ -102,6 +108,9 @@ class App:
         return pygame.Rect(left, top, width - left - right, height - top - bottom)
 
     def run(self):
+        for job in (self.program, *self.helpers):
+            if job:
+                job.start()                # before the next line: the motor program keeps its priority
         os.setpriority(os.PRIO_PROCESS, 0, max(NICE, os.getpriority(os.PRIO_PROCESS, 0)))
         sys.setswitchinterval(0.001)       # the camera and autopilot threads get their turn sooner
         self.vision.start()
@@ -112,8 +121,14 @@ class App:
                 if not pygame.display.get_active():
                     time.sleep(0.02)       # minimised: nobody is looking
         finally:
-            self.camera.stop()
-            pygame.quit()
+            self.close()
+
+    def close(self):
+        """Motors off first."""
+        if self.program:
+            self.program.stop()
+        self.camera.stop()
+        pygame.quit()
 
     def quit(self):
         self.running = False
@@ -170,6 +185,11 @@ class App:
         self.keyboard.update(now, self.focused, self.keys_drive())
         if self.status.msg != self._news:
             self._news, self._news_until = self.status.msg, now + NEWS
+        if self.vision.error and self.status.ap_mode in core.VISION_MODES:
+            self.notice(self.vision.error, AMBER)
+        if self.program and self.program.stops != self._stops:
+            self._stops = self.program.stops
+            self.notice(self.program.problem, RED)
         toggle = self.status.view_toggle                 # SQUARE on the controller
         if toggle is not None:
             if self._view_toggle not in (None, toggle) and not self.dialogs:
@@ -184,13 +204,12 @@ class App:
         if not self.updater:
             return
         self.updater.tick()
-        if self.updater.state == "done":
+        if self.updater.state == "done" and not self.status.armed:          # never while driving
             if not self._restart_at:
                 self._restart_at = now + (8 if self.updater.notes else 1.5)
             elif now >= self._restart_at:
-                self.camera.stop()
-                pygame.quit()
-                updater.restart_after_update(sys.argv)
+                self.restart = True
+                self.quit()
 
     def toggle_camera(self):
         self.show("drive" if self.page.name == "camera" else "camera")
@@ -208,7 +227,7 @@ class App:
         if event.type == pygame.QUIT:
             self.quit()
         elif event.type == pygame.WINDOWFOCUSLOST:
-            self.focused = False
+            self.focused = ui.held = False
             self.down.clear()
         elif event.type == pygame.WINDOWFOCUSGAINED:
             self.focused = True
@@ -291,10 +310,11 @@ class App:
         self._hide_mouse()
 
     def _drive_key(self, key, event, repeat):
-        """A key on DRIVE or CAMERA. What the keyboard profile uses goes first; arrows, Tab and Enter work the
-        screen while the focus ring shows."""
+        """A key on DRIVE or CAMERA. What the keyboard profile uses goes first; but while the focus ring shows,
+        arrows, Tab and Enter work the screen, and so do + and - when the ring is on a value."""
         ui, keyboard = self.ui, self.keyboard
-        works_screen = ui.ring and key in (*ARROWS, "tab", "return", "kp_enter")
+        works_screen = ui.ring and (key in (*ARROWS, "tab", "shift", "return", "kp_enter")
+                                    or ui.has_value and key in (*MORE, *LESS))
         if keyboard.in_use and keyboard.uses(key) and not works_screen:
             if not repeat:
                 ui.ring = False
@@ -302,7 +322,7 @@ class App:
         elif keyboard.in_use and key in ("return", "kp_enter") and not ui.ring:
             if not repeat:
                 keyboard.hold_enter(time.monotonic())
-        elif key in (*ARROWS, "tab", "return", "kp_enter"):
+        elif works_screen or key in (*ARROWS, "tab", "return", "kp_enter"):
             self._work_screen(key, event, repeat)
         elif not repeat:
             self._shortcut(key)
@@ -314,9 +334,9 @@ class App:
             self.toggle_camera()
         elif key == "p":
             self.link.send("next_profile:keyboard")
-        elif key in ("plus", "equal", "kp_add"):
+        elif key in MORE:
             self.link.send("speed+")
-        elif key in ("minus", "kp_subtract"):
+        elif key in LESS:
             self.link.send("speed-")
         elif key == "0":
             self.link.send("ap_off")
@@ -443,7 +463,7 @@ class App:
         if time.monotonic() < self._notice_until:
             return self._notice
         if not status.online:
-            return "Waiting for the ROV program…  (start the app with run.sh)", AMBER
+            return (self.program.problem if self.program else "") or "Starting the motor program…", AMBER
         if not status.output_ok:
             return "⚠ " + status.output, AMBER
         if status.armed or time.monotonic() < self._news_until:

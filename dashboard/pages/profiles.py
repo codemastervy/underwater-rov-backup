@@ -46,9 +46,9 @@ class ProfilesPage(Page):
             self.app.notice("Could not save the profiles", RED)
 
     def _free_name(self, base):
-        names, name, n = {p["name"] for p in self.profiles}, base, 2
+        names, name, n = {p["name"] for p in self.profiles}, base[:NAME_LENGTH], 2
         while name in names:
-            name, n = f"{base} {n}", n + 1
+            name, n = f"{base[:NAME_LENGTH - len(str(n)) - 1]} {n}", n + 1
         return name
 
     def _add(self, profile):

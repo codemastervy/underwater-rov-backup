@@ -10,7 +10,7 @@ from ..link import write_file
 from ..theme import BODY, GAP, MUTED, RED, SMALL, TEXT, TITLE
 from . import Page
 
-MOST = 8
+MOST = core.MISSION_MOST
 ACTIONS = [(name, name.replace("_", " ").upper()) for name in core.MISSION_ORDER]
 
 
