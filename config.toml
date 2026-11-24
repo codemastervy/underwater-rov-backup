@@ -15,10 +15,10 @@ arm_switch_pin = -1      # not used on the Mega
 device = "auto"          # "auto" picks the USB capture card, not the laptop webcam. Or "/dev/video2" etc.
 
 [control]
-design = "v13"           # frame: "v13" (original) or "new" (new frame). Pick it in the app (SETUP > EXTRAS > FRAME);
-                         # each frame trims the motors for its shape (see DEFAULT_DESIGNS in rov.py)
-drive_profile = "Standard"   # active drive profile. Edit profiles in the app: SETUP > PROFILES.
-                             # Stored in profiles.json. TRIANGLE = next profile.
+design = "v13"           # frame: "v13" (original) or "new" (new frame). Pick it on the screen (MOTORS page);
+                         # each design trims the motors for its shape (see DEFAULT_DESIGNS in rov.py)
+drive_profile = "Standard"   # profile in use: a controller profile (controller drives) or a keyboard
+                             # profile (keyboard drives). Edited on the PROFILES page, stored in profiles.json.
 deadzone = 0.08
 expo = 0.35
 ramp_per_second = 3.0
@@ -31,8 +31,7 @@ invert_yaw = false
 invert_heave = false
 invert_sway = false
 invert_pitch = false
-keyboard_drive = false   # drive with a keyboard (WASD) - switch on the screen: SETUP > EXTRAS
-arm_sound = true         # motors play a short tune when armed (SETUP > EXTRAS)
+arm_sound = true         # motors play a short tune when armed (SYSTEM page)
 sound_volume = 5         # 1-15: PWM duty % used for the tune
 
 [controllers]

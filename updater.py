@@ -1,7 +1,7 @@
-"""Automatic updates from GitHub (used by rov_gui.py; needs only Python and an internet connection).
+"""Automatic updates from GitHub (used by the dashboard; needs only Python and an internet connection).
 
 The dashboard checks GitHub at start-up and every 30 minutes. When a newer version is there it
-shows "UPDATE READY"; one tap on SETUP > EXTRAS > UPDATE NOW (only while SAFE) installs it and
+shows "UPDATE READY"; UPDATE NOW on the SYSTEM page (only while SAFE) installs it and
 restarts the program. Your settings are never touched (motor flips, profiles, camera, autopilot,
 mission, arm tune).
 
@@ -24,8 +24,8 @@ BRANCH = "main"
 HERE = os.path.dirname(os.path.abspath(__file__))
 VERSION_FILE = os.path.join(HERE, "VERSION")
 # your settings: never overwritten by an update
-KEEP = {"config.toml", "profiles.json", "designs.json", "camera.json", "autopilot.json", "mission.json", "tune.txt", "keymap.json",
-        "VERSION", ".mega-firmware"}
+KEEP = {"config.toml", "profiles.json", "designs.json", "camera.json", "autopilot.json", "mission.json", "screen.json",
+        "tune.txt", "keymap.json", "VERSION", ".mega-firmware"}
 CHECK_EVERY = 30 * 60
 UA = {"User-Agent": "rov-updater"}
 

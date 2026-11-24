@@ -1,7 +1,7 @@
-"""Camera autopilot vision for the ROV (used by rov_gui.py, which owns the camera).
+"""Camera autopilot vision for the ROV (used by the dashboard, which owns the camera).
 
-Works on the same frames the dashboard shows (after FLIP and PICTURE adjustments), shrunk to about
-140x100 pixels so it is quick on a Raspberry Pi 4. Needs only numpy.
+Works on the same frames the dashboard shows (after FLIP and PICTURE adjustments), shrunk to
+160x120 pixels so it is quick on a Raspberry Pi 4. Needs only numpy.
 
   find_line(img, colour)   -> {"found", "offset", "angle", "points"}   line following
   find_target(img, colour) -> {"found", "x", "y", "area"}              colour target following
@@ -16,11 +16,9 @@ HUES = {"red": [(340, 360), (0, 18)], "orange": [(18, 42)], "yellow": [(42, 70)]
         "blue": [(165, 255)], "pink": [(285, 340)]}
 
 
-def to_array(ppm, step=4):
-    """PPM frame (b'P6\\nW H\\n255\\n' + RGB) -> float array (h/step, w/step, 3) in 0..1."""
-    _, size, _, data = ppm.split(b"\n", 3)
-    w, h = (int(v) for v in size.split())
-    img = np.frombuffer(data, np.uint8, count=w * h * 3).reshape(h, w, 3)
+def to_array(data, width, height, step=4):
+    """RGB bytes -> float array (height/step, width/step, 3) in 0..1."""
+    img = np.frombuffer(data, np.uint8, count=width * height * 3).reshape(height, width, 3)
     return img[::step, ::step].astype(np.float32) / 255.0
 
 

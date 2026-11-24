@@ -5,7 +5,7 @@ if [ "$EUID" -eq 0 ]; then echo "Run as your normal user (not sudo) - it asks fo
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo "==> Installing packages"
-sudo pacman -S --needed --noconfirm python python-evdev python-pyserial python-numpy tk ffmpeg bluez bluez-utils arduino-cli
+sudo pacman -S --needed --noconfirm python python-evdev python-pyserial python-numpy python-pygame ttf-dejavu ffmpeg bluez bluez-utils arduino-cli
 
 echo "==> Giving $USER access to game controllers (input) and the Arduino (uucp)"
 sudo usermod -aG input,uucp "$USER"
@@ -25,6 +25,7 @@ Comment=Drive the ROV from this laptop through the Arduino Mega
 Exec=$DIR/run.sh
 Icon=input-gaming
 Terminal=false
+StartupWMClass=rov-backup
 Categories=Utility;
 EOF
 

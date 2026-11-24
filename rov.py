@@ -13,23 +13,25 @@ Controls (default):
   R2 / L2            up / down (adds to right stick)
   R1 / L1            speed level up / down
   SQUARE             camera view on/off (on the case screen)
-  TRIANGLE           next drive profile (only while disarmed). What the sticks, triggers
-                     and D-pad do is set per profile on the case screen: SETUP > PROFILES.
-                     Built-in: Tank (stick per side) and Standard (drive+turn / up-down).
+  TRIANGLE           next controller profile (only while disarmed)
 
-Keyboard drive (switch it on on the case screen: SETUP > EXTRAS):
-  W/S forward/back, A/D turn, Space up, Shift down, R/F tilt, Enter ARM, Esc STOP.
-  Which key does what comes from the active KEYBOARD profile (SETUP > PROFILES; P = next keyboard profile).
-  The dashboard sends the keys; if it stops sending for 0.5 s the keys count as released
-  (and with no controller connected the motors disarm).
+Profiles (PROFILES page on the screen): exactly one is in use, and its type decides what drives.
+  Controller profile  what the sticks, triggers and D-pad do. OPTIONS arms.
+                      Built-in: Tank (stick per side) and Standard (drive+turn / up-down).
+  Keyboard profile    which key does what. Holding Enter on the screen arms, P picks the next one.
+                      Built-in: Keys WASD (W/S forward/back, A/D turn, Space/Shift up/down, R/F tilt)
+                      and Keys arrows.
+  The dashboard sends the held keys; if it stops for 0.5 s (closed, frozen, or another window has the
+  keyboard) the keys count as released and the motors disarm.
+  STOP works from everything at all times: CIRCLE on the controller, Esc, and the STOP buttons.
 
-Autopilot (SETUP > AUTOPILOT, mouse only, off at every start-up): trim, cruise control, line following,
-colour-target following, camera heading hold, and pre-programmed missions. See class Autopilot.
+Autopilot (AUTOPILOT page, never from the controller, off at every start-up): trim, cruise control, line
+following, colour-target following, camera heading hold, and pre-programmed missions. See class Autopilot.
 
 Arm sound: when armed, the motors play a tune (quiet audio-frequency PWM, like a 3D printer's
 stepper "music"): an FPV-drone style arming sound (5 s), or any RTTTL ringtone you paste in.
 Touching any control stops the tune at once so you can drive. On/off, volume, tune and TEST are
-on SETUP > EXTRAS.
+on the SYSTEM page.
 
 Safety: starts disarmed; disarms on controller loss, heartbeat loss, panel switch off,
 or program exit. The BTS7960 enable line is only HIGH while armed.
@@ -54,11 +56,11 @@ log = logging.getLogger("rov")
 HERE = os.path.dirname(os.path.abspath(__file__))
 AXES = ("surge", "yaw", "heave", "sway", "pitch")
 TICK = 0.02  # 50 Hz control loop
-STATUS_PATH = "/dev/shm/rov-status.json"   # read by rov_gui.py
-CMD_PATH = "/dev/shm/rov-cmd"              # written by rov_gui.py
-KEYS_PATH = "/dev/shm/rov-keys.json"       # keyboard drive: keys held down, written by rov_gui.py
+STATUS_PATH = "/dev/shm/rov-status.json"   # read by the dashboard
+CMD_PATH = "/dev/shm/rov-cmd"              # written by the dashboard
+KEYS_PATH = "/dev/shm/rov-keys.json"       # keyboard profiles: keys held down, written by the dashboard
 
-# Keyboard drive: which key does what. Each KEYBOARD profile (SETUP > PROFILES, in profiles.json) has its own keys.
+# Keyboard profiles: which key does what (PROFILES page, in profiles.json).
 # action, label, motion axis, amount (speed_up / speed_down are handled by the dashboard)
 KEY_ACTIONS = [("forward", "Forward", "surge", 1.0), ("back", "Back", "surge", -1.0),
                ("left", "Turn left", "yaw", -1.0), ("right", "Turn right", "yaw", 1.0),
@@ -71,7 +73,8 @@ KEY_PRESETS = {
     "ARROWS": {"forward": "up", "back": "down", "left": "left", "right": "right", "up": "space", "down": "ctrl",
                "tilt_up": "prior", "tilt_down": "next", "speed_up": "equal", "speed_down": "minus"},
 }
-FIXED_KEYS = {"return", "kp_enter", "escape", "f11"}     # ARM, STOP, full screen: can't be re-used
+# can't be used in a profile: Enter = ARM, Esc = STOP, and the keys that work the screen (Tab, F1-F12)
+FIXED_KEYS = {"return", "kp_enter", "escape", "tab"} | {f"f{n}" for n in range(1, 13)}
 
 
 def load_keymap(path):
@@ -101,7 +104,7 @@ def key_axes(keymap):
 
 KEY_AXES = key_axes(KEY_PRESETS["WASD"])
 
-VISION_PATH = "/dev/shm/rov-vision.json"  # camera autopilot results, written by rov_gui.py
+VISION_PATH = "/dev/shm/rov-vision.json"  # camera autopilot results, written by the dashboard
 
 # Motor "music": (frequency Hz, seconds); 0 Hz = silence.
 TUNES = {"beeps": [(1047, 0.10), (0, 0.03), (1319, 0.10), (0, 0.03), (1568, 0.20)]}
@@ -175,7 +178,7 @@ def parse_rtttl(text, max_s=TUNE_MAX):
         t += sec
     return name, cut
 
-# ---- drive profiles (edited on the case screen: SETUP > PROFILES; stored in profiles.json) ----
+# ---- drive profiles (edited on the PROFILES page; stored in profiles.json) ----
 # Controls, read so that stick up / stick right / trigger pressed / D-pad up / D-pad right = positive.
 INPUTS = ["ly", "lx", "ry", "rx", "l2", "r2", "dy", "dx"]
 INPUT_LABELS = {"ly": "Left stick ↕", "lx": "Left stick ↔", "ry": "Right stick ↕", "rx": "Right stick ↔",
@@ -201,7 +204,7 @@ DEFAULT_PROFILES = [
         "ly": {"action": "forward"}, "lx": {"action": "turn"}, "ry": {"action": "updown"},
         "r2": {"action": "updown"}, "l2": {"action": "updown", "invert": True},
         "dy": {"action": "tilt", "power": 0.6}}},
-    # keyboard profiles: which key does what for KEYBOARD DRIVE (P = next keyboard profile)
+    # keyboard profiles: which key does what
     {"name": "Keys WASD", "type": "keyboard", "keys": KEY_PRESETS["WASD"]},
     {"name": "Keys arrows", "type": "keyboard", "keys": KEY_PRESETS["ARROWS"]},
 ]
@@ -259,7 +262,7 @@ def complete_profiles(profs, config_path=None):
 
 # --------------------------------------------------------------------------- frame designs
 # Each hull design (github.com/codemastervy/aquabots-rov-hull, one branch per design) needs its own motor trim.
-# SETUP > DESIGN picks one (saved as `design = "..."` in config.toml). Values changed on that page are saved
+# The MOTORS page picks one (saved as `design = "..."` in config.toml). Values changed on that page are saved
 # in designs.json next to config.toml; DEFAULTS puts a design back to the values below.
 #   pitch_mix   - share of the tilt control on the front/rear up motors (1.0 = as wired in config.toml)
 #   heave_front - front up/down motor's share of up/down (evens out a frame that is heavier at one end)
@@ -291,7 +294,7 @@ def design_value(key, value):
 
 
 def load_designs(config_path=None):
-    """Built-in designs with any values saved from SETUP > DESIGN (designs.json) on top."""
+    """Built-in designs with any values saved from the MOTORS page (designs.json) on top."""
     out = [dict(d) for d in DEFAULT_DESIGNS]
     try:
         with open(designs_path(config_path)) as f:
@@ -561,6 +564,9 @@ class FakeBackend:
     def tone(self, pin, freq, duty):
         self.state[pin] = duty if freq > 0 else 0
 
+    def describe(self):
+        return "Dry run: no motors"
+
     def close(self):
         pass
 
@@ -585,7 +591,7 @@ class Thruster:
         return " + ".join(label for label, a in jobs if self.coef[a]) or "unused"
 
     def set_design(self, d):
-        """Trim for the frame design (SETUP > DESIGN). Front/rear = sign of this motor's pitch share."""
+        """Trim for the frame design (MOTORS page). Front/rear = sign of this motor's pitch share."""
         b = self.base
         self.coef = dict(b)
         self.coef["pitch"] = b["pitch"] * d["pitch_mix"]
@@ -788,7 +794,7 @@ class Autopilot:
       target   steers towards a coloured object and stops at a set distance
       heading  holds the direction using camera motion
       mission  runs timed steps (mission.json, edited on the screen)
-    ANY pilot input (stick, trigger, D-pad, keyboard drive key) switches the mode off immediately.
+    ANY pilot input (stick, trigger, D-pad, drive key) switches the mode off immediately.
     Cruise: the input held while clicking sets the speed; once let go, the next movement takes over.
     Trim (hover / nose) is added whenever the master switch is ON and the ROV is armed.
     """
@@ -882,18 +888,18 @@ class Autopilot:
         if mode not in AP_MODES:
             return
         if not self.enabled:
-            self.rov.say("Switch the autopilot ON first (SETUP > AUTOPILOT)")
+            self.rov.say("Switch the autopilot ON first (AUTOPILOT page)")
         elif not self.rov.armed:
             self.rov.say("Arm first, then pick an autopilot mode")
         elif mode == "cruise" and not any(abs(v) > PILOT_ACTIVE for v in pilot.values()):
-            self.rov.say("Drive at the speed you want, then click CRUISE")
+            self.rov.say("Drive at the speed you want, then pick CRUISE")
         elif mode != "cruise" and self.rov.pilot_input():
-            self.rov.say(f"Let go of the sticks, then click {mode.upper()}")
+            self.rov.say(f"Let go of the controls, then pick {mode.upper()}")
         else:
             if mode == "mission":
                 self.steps = self.load_mission()
                 if not self.steps:
-                    self.rov.say("The mission has no steps (SETUP > AUTOPILOT > EDIT MISSION)")
+                    self.rov.say("The mission has no steps (AUTOPILOT page > EDIT MISSION)")
                     return
                 self.step_i, self.step_t0 = 0, time.monotonic()
             self.mode = mode
@@ -903,7 +909,7 @@ class Autopilot:
             self.lost_since = None
             self.epoch += 1
             self.rov.say(f"Autopilot {mode.upper()} engaged - " +
-                         ("let go of the sticks; then any movement takes over" if mode == "cruise"
+                         ("let go of the controls; then any movement takes over" if mode == "cruise"
                           else "any stick/key movement or STOP takes over"))
 
     def mission_path(self):
@@ -1045,7 +1051,9 @@ class ROV:
         self.levels = c.get("speed_levels", [0.25, 0.5, 0.75, 1.0])
         self.level = min(c.get("start_speed_level", 1), len(self.levels) - 1)
         self.min_duty = c.get("min_duty", 0)
+        self.last_used = {}   # profile type -> name of the one used last
         self.load_profiles(c.get("drive_profile", "Standard"))
+        self.migrate_keyboard_switch(c)
         self.view_toggle = 0  # bumped by SQUARE; the GUI flips between camera and dashboard
         self.hb_timeout = c.get("heartbeat_timeout", 0.5)
         self.inv = {a: -1.0 if c.get(f"invert_{a}", False) else 1.0 for a in AXES}
@@ -1061,7 +1069,6 @@ class ROV:
         self.pad = None
         self.running = True
         self.status_msg = ""
-        self.kbd_enabled = bool(c.get("keyboard_drive", False))
         self.kbd_keys = set()
         self.kbd_live = False
         self.sound_on = bool(c.get("arm_sound", True))
@@ -1094,8 +1101,12 @@ class ROV:
         return self.switch_pin < 0 or self.gpio.read(self.switch_pin) == 0
 
     def pilot_input(self):
-        """Is the pilot touching anything that drives (sticks, triggers, D-pad, keyboard drive keys)?"""
-        return not self.sticks_centred() or bool(self.kbd_live and self.kbd_keys)
+        """Is the pilot touching anything that can take over (sticks, triggers, D-pad, drive keys)?"""
+        return not self.sticks_centred() or bool(self.kbd_keys)
+
+    def control_link(self):
+        """Is the device that drives (the profile in use decides which) still there?"""
+        return self.kbd_live if self.drives("keyboard") else self.pad is not None
 
     def sticks_centred(self):
         if not self.pad:
@@ -1107,18 +1118,22 @@ class ROV:
     def output_ready(self):
         return getattr(self.gpio, "ready", lambda: True)()
 
-    def arm(self, source="controller"):
+    def arm(self, source):
+        """source: "controller" (OPTIONS) or "keyboard" (Enter). Only the device that drives can arm."""
         if self.armed:
             return
-        if source == "keyboard" and not (self.kbd_enabled and self.kbd_live):
-            self.say("Keyboard drive is off (SETUP > EXTRAS)")
+        if not self.drives(source):
+            self.say("Keyboard profile in use: hold Enter, or TRIANGLE for a controller profile"
+                     if source == "controller" else "Pick a keyboard profile first (P)")
+        elif not self.control_link():
+            self.say("Can't arm: the keyboard link is down" if source == "keyboard" else "Can't arm: no controller")
         elif not self.output_ready():
             self.say("Can't arm: " + getattr(self.gpio, "describe", lambda: "motor output not ready")())
         elif not self.switch_on():
             self.say("Panel ARM switch is OFF - can't arm")
-        elif not self.sticks_centred():
+        elif source == "controller" and not self.sticks_centred():
             self.say("Centre the sticks and release triggers to arm")
-        elif self.kbd_live and self.kbd_keys:
+        elif self.kbd_keys:
             self.say("Let go of the keys to arm")
         else:
             self.end_tune()
@@ -1158,11 +1173,11 @@ class ROV:
         e = self.pad.e
         for code in presses:
             if code in (e.BTN_START,):
-                self.arm()
+                self.arm("controller")
             elif code in (e.BTN_EAST, e.BTN_SELECT, e.BTN_MODE):
                 self.disarm("button")
             elif code == e.BTN_NORTH:
-                self.switch_profile()
+                self.switch_profile("controller")
             elif code == e.BTN_WEST:
                 self.view_toggle += 1
             elif code == e.BTN_TR:
@@ -1171,8 +1186,9 @@ class ROV:
                 self.change_speed(-1)
 
     # ---- profiles ----
-    def load_profiles(self, active=None, kbd_active=None):
-        """Load profiles.json (creating it with the defaults if missing). `active` = name or 1-based number."""
+    def load_profiles(self, active=None):
+        """Load profiles.json (creating it with the defaults if missing) and use the profile called `active`
+        (older configs: its number among the controller profiles)."""
         path = profiles_path(self.config_path)
         profs = None
         try:
@@ -1187,85 +1203,91 @@ class ROV:
         except (OSError, ValueError) as ex:
             log.error(f"profiles.json unreadable ({ex}) - using built-in profiles")
         self.profiles = complete_profiles(profs or [], self.config_path)
-        ctrl = self.type_idxs("controller")
-        names = [self.profiles[i]["name"] for i in ctrl]
-        if isinstance(active, int) and 1 <= active <= len(names):
-            self.profile_idx = ctrl[active - 1]
+        names = [p["name"] for p in self.profiles]
+        ctrl = self.profiles_of("controller")
+        if isinstance(active, int) and 1 <= active <= len(ctrl):
+            idx = ctrl[active - 1]
         elif active in names:
-            self.profile_idx = ctrl[names.index(active)]
+            idx = names.index(active)
         else:
-            self.profile_idx = ctrl[names.index("Standard")] if "Standard" in names else ctrl[0]
-        kbd = self.type_idxs("keyboard")
-        knames = [self.profiles[i]["name"] for i in kbd]
-        if kbd_active is None:
-            kbd_active = self.cfg.get("control", {}).get("keyboard_profile")
-        self.kbd_profile_idx = kbd[knames.index(kbd_active)] if kbd_active in knames else kbd[0]
-        self.key_axes = key_axes(self.kbd_profile()["keys"])
+            idx = names.index("Standard") if "Standard" in names else ctrl[0]
+        self.use(idx)
 
-    def type_idxs(self, kind):
+    def use(self, idx):
+        self.profile_idx = idx
+        prof = self.profile()
+        self.last_used[prof["type"]] = prof["name"]
+        self.key_axes = key_axes(prof.get("keys", {}))
+
+    def profiles_of(self, kind):
         return [i for i, p in enumerate(self.profiles) if p["type"] == kind]
 
-    def active_profile(self):
-        """The controller profile in use."""
+    def profile(self):
+        """The profile in use."""
         return self.profiles[self.profile_idx]
 
-    def kbd_profile(self):
-        """The keyboard profile in use (KEYBOARD DRIVE keys)."""
-        return self.profiles[self.kbd_profile_idx]
+    def drives(self, kind):
+        """Is a profile of this type ("controller" or "keyboard") in use?"""
+        return self.profile()["type"] == kind
 
     def set_profile(self, idx):
-        if self.profiles[idx]["type"] == "keyboard":
-            return self.set_kbd_profile(idx)
-        self.profile_idx = idx
-        ctrl = self.type_idxs("controller")
-        name = self.active_profile()["name"]
-        saved = self.save_setting("drive_profile", json.dumps(name), section="[control]")
-        self.say(f"Controller profile {ctrl.index(idx) + 1}/{len(ctrl)}: {name}"
-                 + ("" if saved else " (could not save!)"))
+        self.use(idx)
+        prof = self.profile()
+        saved = self.save_setting("drive_profile", json.dumps(prof["name"], ensure_ascii=False), section="[control]")
+        self.say(f"{prof['type'].capitalize()} profile: {prof['name']}" + ("" if saved else " (could not save!)"))
 
-    def set_kbd_profile(self, idx):
-        self.kbd_profile_idx = idx
-        self.key_axes = key_axes(self.kbd_profile()["keys"])
-        kbd = self.type_idxs("keyboard")
-        name = self.kbd_profile()["name"]
-        saved = self.save_setting("keyboard_profile", json.dumps(name), section="[control]")
-        self.say(f"Keyboard profile {kbd.index(idx) + 1}/{len(kbd)}: {name}" + ("" if saved else " (could not save!)"))
-
-    def switch_profile(self, kind="controller"):
-        """TRIANGLE / screen button: next controller profile. P key: next keyboard profile. Only while SAFE."""
+    def profile_locked(self):
         if self.armed:
-            self.say("Disarm first (STOP) to change profile")
-            return
-        ids = self.type_idxs(kind)
-        cur = self.profile_idx if kind == "controller" else self.kbd_profile_idx
-        self.set_profile(ids[(ids.index(cur) + 1) % len(ids)] if cur in ids else ids[0])
+            self.say("Press STOP first to change profile")
+        return self.armed
 
-    def reload_profiles(self, use_idx):
-        """The screen editor saved profiles.json. use_idx >= 0 also makes that profile active."""
+    def switch_profile(self, kind):
+        """TRIANGLE: next controller profile. P: next keyboard profile. Coming from the other kind: the one
+        of this kind used last."""
+        if self.profile_locked():
+            return
+        ids = self.profiles_of(kind)
+        if self.drives(kind):
+            self.set_profile(ids[(ids.index(self.profile_idx) + 1) % len(ids)])
+        else:
+            self.set_profile(next((i for i in ids if self.profiles[i]["name"] == self.last_used.get(kind)), ids[0]))
+
+    def use_profile(self, name):
+        """Picked on the screen."""
+        names = [p["name"] for p in self.profiles]
+        if name in names and not self.profile_locked():
+            self.set_profile(names.index(name))
+
+    def reload_profiles(self, active):
+        """The screen edited profiles.json. `active` = profile to use from now on ("" = the one in use)."""
         if self.armed:
             self.disarm("profiles changed")
-        self.load_profiles(self.active_profile()["name"], self.kbd_profile()["name"])
-        if 0 <= use_idx < len(self.profiles):
-            self.set_profile(use_idx)
+        before = self.profile()["name"]
+        self.load_profiles(active or before)
+        if self.profile()["name"] != before:         # renamed or deleted: remember the new one
+            self.set_profile(self.profile_idx)
         else:
-            self.say(f"Profiles saved. Using: {self.active_profile()['name']} (controller), "
-                     f"{self.kbd_profile()['name']} (keyboard)")
+            self.say("Profiles saved")
 
-    def save_setting(self, key, value, section):
-        """Set `key = value` in config.toml (first match, else add under `section`)."""
+    def migrate_keyboard_switch(self, c):
+        """Older versions had a KEYBOARD DRIVE switch next to a controller profile. Now using a keyboard
+        profile is the switch, so a switch that was left on becomes a keyboard profile in use."""
+        if c.pop("keyboard_drive", False) and not self.drives("keyboard"):
+            kbd = self.profiles_of("keyboard")
+            names = [self.profiles[i]["name"] for i in kbd]
+            old = c.get("keyboard_profile")
+            self.set_profile(kbd[names.index(old)] if old in names else kbd[0])
+        self.drop_settings("keyboard_drive", "keyboard_profile")
+
+    def edit_config(self, edit):
+        """Rewrite config.toml: edit(lines) changes the list of lines and returns True to save it."""
         if not self.config_path:
             return False
         try:
             with open(self.config_path) as f:
                 lines = f.read().split("\n")
-            for k, line in enumerate(lines):
-                if line.split("=")[0].strip() == key:
-                    lines[k] = f"{key} = {value}"
-                    break
-            else:
-                if section not in lines:
-                    lines += ["", section]
-                lines.insert(lines.index(section) + 1, f"{key} = {value}")
+            if not edit(lines):
+                return False
             tmp = self.config_path + ".tmp"
             with open(tmp, "w") as f:
                 f.write("\n".join(lines))
@@ -1275,7 +1297,29 @@ class ROV:
             log.error(f"saving config failed: {ex}")
             return False
 
-    # ---- frame design (SETUP > DESIGN) ----
+    def save_setting(self, key, value, section):
+        """Set `key = value` in config.toml (first match, else add under `section`)."""
+        def edit(lines):
+            for k, line in enumerate(lines):
+                if line.split("=")[0].strip() == key:
+                    lines[k] = f"{key} = {value}"
+                    return True
+            if section not in lines:
+                lines += ["", section]
+            lines.insert(lines.index(section) + 1, f"{key} = {value}")
+            return True
+        return self.edit_config(edit)
+
+    def drop_settings(self, *keys):
+        """Remove settings that are no longer used from config.toml."""
+        def edit(lines):
+            kept = [line for line in lines if line.split("=")[0].strip() not in keys]
+            changed = len(kept) != len(lines)
+            lines[:] = kept
+            return changed
+        return self.edit_config(edit)
+
+    # ---- frame design (MOTORS page) ----
     def design(self):
         return next((d for d in self.designs if d["id"] == self.design_id), self.designs[0])
 
@@ -1344,28 +1388,27 @@ class ROV:
         return a.get("dx", 0.0)
 
     def command(self):
-        """Turn controller positions (active profile) + held keyboard keys into motion
+        """Turn what the profile in use drives with (controller positions or held keys) into motion
         (surge/yaw/heave/sway/pitch)."""
         cmd = dict.fromkeys(AXES, 0.0)
-        for key, m in (self.active_profile()["map"].items() if self.pad else ()):
+        for key, m in (self.profile().get("map", {}).items() if self.pad else ()):
             vec = ACTIONS.get(m["action"], {})
             if not vec:
                 continue
             v = self.input_value(key) * (-1.0 if m["invert"] else 1.0) * m["power"]
             for axis, w in vec.items():
                 cmd[axis] += v * w
-        if self.kbd_live:
-            for k in self.kbd_keys:
-                axis, v = self.key_axes[k]
-                cmd[axis] += v
+        for k in self.kbd_keys:
+            axis, v = self.key_axes[k]
+            cmd[axis] += v
         return {ax: self.inv[ax] * max(-1.0, min(1.0, cmd[ax])) for ax in AXES}
 
-    # ---- keyboard drive ----
+    # ---- keyboard profiles ----
     def read_keys(self):
-        """Keys held on the case keyboard (sent by the dashboard ~20x a second)."""
+        """Keys held on the keyboard (sent by the dashboard ~20x a second while a keyboard profile is in use)."""
         self.kbd_live = False
         self.kbd_keys = set()
-        if not self.kbd_enabled:
+        if not self.drives("keyboard"):
             return
         try:
             with open(KEYS_PATH) as f:
@@ -1376,14 +1419,6 @@ class ROV:
             return
         self.kbd_live = True
         self.kbd_keys = {k for k in st.get("keys", []) if k in self.key_axes}
-
-    def set_keyboard(self, on):
-        if self.armed:
-            self.disarm("keyboard drive switched")
-        self.kbd_enabled = on
-        saved = self.save_setting("keyboard_drive", "true" if on else "false", section="[control]")
-        self.say(("Keyboard drive ON: Enter = arm, Esc = stop" if on else "Keyboard drive OFF")
-                 + ("" if saved else " (could not save!)"))
 
     # ---- arm sound (motor music) ----
     def set_sound(self, on=None, volume=None):
@@ -1491,7 +1526,8 @@ class ROV:
         next_tick = time.monotonic()
         next_print = 0.0
         tty = sys.stdout.isatty()
-        self.say("Waiting for controller (press PS button to connect)...")
+        self.say("Hold Enter to arm" if self.drives("keyboard")
+                 else "Waiting for controller (press PS button to connect)...")
         while self.running:
             now = time.monotonic()
             if self.pad is None and now >= next_scan:
@@ -1519,11 +1555,10 @@ class ROV:
             if next_tick < time.monotonic():  # fell behind, don't try to catch up
                 next_tick = time.monotonic() + TICK
             self.tick()
-            if time.monotonic() >= next_print:
+            self.write_status_file()
+            if tty and time.monotonic() >= next_print:
                 next_print = time.monotonic() + 0.2
-                self.write_status_file()
-                if tty:
-                    self.print_status()
+                self.print_status()
 
     def tick(self):
         try:
@@ -1534,15 +1569,15 @@ class ROV:
 
     def _tick(self):
         self.check_screen_commands()
+        self.read_keys()
         if self.armed and not self.output_ready():
             self.disarm("Mega connection lost")
         if self.pad and self.pad.motion and time.monotonic() - self.pad.last_motion > self.hb_timeout:
             self.lose_pad("heartbeat timeout")
         if self.armed and not self.switch_on():
             self.disarm("panel switch off")
-        self.read_keys()
-        if self.armed and not self.pad and not self.kbd_live:
-            self.disarm("keyboard link lost" if self.kbd_enabled else "no controller")
+        if self.armed and not self.control_link():
+            self.disarm("keyboard link lost" if self.drives("keyboard") else "no controller")
         if self.tune and (self.pilot_input() or self.ap.mode):
             self.end_tune()          # the pilot wants to drive: stop the music at once
             if self.armed:
@@ -1560,19 +1595,19 @@ class ROV:
             t.apply(self.gpio, ramp(t.value, target, step), self.min_duty)
 
     def write_status_file(self, path=STATUS_PATH):
-        """JSON status for the on-screen GUI (rov_gui.py)."""
+        """JSON status for the dashboard, written every tick."""
+        prof = self.profile()
         st = {
             "ts": time.time(),
             "armed": self.armed,
             "controller": self.pad.name if self.pad else None,
             "heartbeat": bool(self.pad and self.pad.motion),
             "speed": int(self.levels[self.level] * 100),
-            "profile": self.type_idxs("controller").index(self.profile_idx) + 1,
-            "profile_count": len(self.type_idxs("controller")),
-            "keyboard_profile": self.kbd_profile()["name"],
-            "key_map": self.kbd_profile()["keys"],
-            "profile_name": self.active_profile()["name"],
-            "profile_map": self.active_profile()["map"],
+            "profile_name": prof["name"],
+            "profile_type": prof["type"],
+            "profile_map": prof.get("map", {}),
+            "key_map": prof.get("keys", {}),
+            "profiles": [{"name": p["name"], "type": p["type"]} for p in self.profiles],
             "view_toggle": self.view_toggle,
             "motors": [{"name": t.name, "value": round(t.value, 3), "invert": t.invert, "job": t.job()}
                        for t in self.thrusters],
@@ -1580,7 +1615,6 @@ class ROV:
             "switch_on": self.switch_on(),
             "output_ok": bool(self.output_ready()),
             "output": getattr(self.gpio, "describe", lambda: "Raspberry Pi GPIO")(),
-            "keyboard_drive": self.kbd_enabled,
             "keyboard_live": self.kbd_live,
             "keys": sorted(self.kbd_keys),
             "arm_sound": self.sound_on,
@@ -1596,39 +1630,45 @@ class ROV:
         }
         try:
             with open(path + ".tmp", "w") as f:
-                json.dump(st, f)
+                f.write(json.dumps(st))
             os.replace(path + ".tmp", path)
         except OSError:
             pass
 
     def check_screen_commands(self):
-        """Commands from the GUI. Arming from the screen is only possible with keyboard drive ON (Enter)."""
+        """Take the next command from the dashboard, if there is one."""
+        taken = CMD_PATH + ".taken"
         try:
-            with open(CMD_PATH) as f:
+            os.replace(CMD_PATH, taken)      # move it away first: a command written meanwhile isn't lost
+            with open(taken) as f:
                 cmd = f.read().strip()
-            os.remove(CMD_PATH)
         except OSError:
             return
+        try:
+            self.run_command(cmd)
+        except ValueError as ex:
+            log.warning(f"bad command from the screen: {cmd!r} ({ex})")
+
+    def run_command(self, cmd):
+        """Arming from the screen is only possible with the keyboard (hold Enter), never with the mouse."""
         if cmd == "stop":
             self.disarm("screen STOP button")
-            self.say("STOPPED - press OPTIONS" + (" or Enter" if self.kbd_enabled else "") + " to re-arm")
+            self.say("STOPPED - " + ("hold Enter" if self.drives("keyboard") else "press OPTIONS") + " to arm again")
         elif cmd == "speed+":
             self.change_speed(1)
         elif cmd == "speed-":
             self.change_speed(-1)
-        elif cmd == "profile":
-            self.switch_profile()
+        elif cmd in ("next_profile:controller", "next_profile:keyboard"):
+            self.switch_profile(cmd.split(":")[1])
+        elif cmd.startswith("use_profile:"):
+            self.use_profile(cmd.split(":", 1)[1])
         elif cmd.startswith("reload_profiles:"):
-            self.reload_profiles(int(cmd.split(":")[1]))
+            self.reload_profiles(cmd.split(":", 1)[1])
         elif cmd.startswith("invert:"):
             self.flip_motor(int(cmd.split(":")[1]))
         elif cmd == "kbd_arm":
             self.read_keys()
             self.arm(source="keyboard")
-        elif cmd == "kbd_profile":
-            self.switch_profile("keyboard")
-        elif cmd.startswith("keyboard:"):
-            self.set_keyboard(cmd.endswith(":1"))
         elif cmd.startswith("sound:"):
             self.set_sound(on=cmd.endswith(":1"))
         elif cmd.startswith("volume:"):
@@ -1672,28 +1712,16 @@ class ROV:
 
     def save_invert(self, idx, value):
         """Rewrite just the `invert =` line of the idx-th [[motor]] block, keeping comments."""
-        if not self.config_path:
-            return False
-        try:
-            with open(self.config_path) as f:
-                lines = f.read().split("\n")
+        def edit(lines):
             n = -1
             for k, line in enumerate(lines):
                 if line.strip() == "[[motor]]":
                     n += 1
                 elif n == idx and line.strip().startswith("invert"):
                     lines[k] = f"invert = {'true' if value else 'false'}"
-                    break
-            else:
-                return False
-            tmp = self.config_path + ".tmp"
-            with open(tmp, "w") as f:
-                f.write("\n".join(lines))
-            os.replace(tmp, self.config_path)
-            return True
-        except OSError as ex:
-            log.error(f"saving config failed: {ex}")
+                    return True
             return False
+        return self.edit_config(edit)
 
     def print_status(self):
         state = "\033[42;30m ARMED \033[0m" if self.armed else "\033[41;37m SAFE  \033[0m"

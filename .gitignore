@@ -5,6 +5,7 @@ rov_mega/build/
 .mega-firmware
 autopilot.json
 mission.json
+screen.json
 tune.txt
 VERSION
 keymap.json

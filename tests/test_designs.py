@@ -1,4 +1,4 @@
-"""Tests for SETUP > DESIGN (per-frame motor trim) and the safety rules around it.
+"""Tests for frame designs (per-frame motor trim, MOTORS page) and the safety rules around it.
 
 Run on a laptop or the Pi (no GPIO, no controller needed):  python3 -m unittest discover tests
 """
@@ -189,85 +189,18 @@ class DesignTests(unittest.TestCase):
         self.assertEqual(st["design"], "new")
         self.assertEqual([d["id"] for d in st["designs"]], list(SIM))
 
-    def test_updates_keep_the_design_tweaks(self):
+    def test_updates_keep_the_settings(self):
         import updater
-        self.assertIn("designs.json", updater.KEEP)
-        self.assertIn("config.toml", updater.KEEP)
-
-
-class ScreenTests(unittest.TestCase):
-    """Builds the real dashboard (needs a display) and checks the DESIGN page."""
-
-    @classmethod
-    def setUpClass(cls):
-        try:
-            import tkinter as tk
-            cls.tk = tk
-            cls.root = tk.Tk()
-        except Exception as ex:              # no display (e.g. over SSH)
-            raise unittest.SkipTest(f"no display: {ex}")
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.root.destroy()
-
-    def test_design_page(self):
-        import rov_gui as g
-        d = tempfile.mkdtemp()
-        g.STATUS, g.CMD = os.path.join(d, "status.json"), os.path.join(d, "cmd")
-        g.set_margins(g.MARGINS)            # what main() does: fit the page inside the screen margins
-        cfg = os.path.join(d, "config.toml")
-        shutil.copy(os.path.join(ROOT, "config.toml"), cfg)
-        old = rov.CMD_PATH
-        rov.CMD_PATH = g.CMD
-        try:
-            with open(cfg, "rb") as f:
-                r = rov.ROV(tomllib.load(f), rov.FakeBackend(), cfg)
-            r.write_status_file(g.STATUS)
-            attrs = self.root.attributes
-            self.root.attributes = lambda *a: None if a and a[0] == "-fullscreen" else attrs(*a)
-            dash = g.Dashboard(self.root)
-            dash.show_design()
-            self.root.update()
-            c = dash.c8
-            texts = [c.itemcget(i, "text") for i in c.find_all() if c.type(i) == "text"]
-            for name in ("V13 ORIGINAL", "NEW FRAME (POOL NOODLE)", "TILT POWER", "DEFAULTS"):
-                self.assertIn(name, texts)
-            for i in c.find_all():           # every label fits on the 800x480 screen
-                if c.type(i) == "text" and c.itemcget(i, "text"):
-                    x0, _, x1, _ = c.bbox(i)
-                    self.assertTrue(x0 >= 0 and x1 <= g.W, c.itemcget(i, "text"))
-            dash.design_pick(1)                 # tap the new frame
-            with open(g.CMD) as f:
-                self.assertEqual(f.read(), "design:new")
-            r.check_screen_commands()
-            r.write_status_file(g.STATUS)
-            dash.update_design(g.read_status())
-            dash.design_step("heave_front", -1)   # - on FRONT UP MOTOR
-            with open(g.CMD) as f:
-                self.assertEqual(f.read(), "design_set:heave_front:0.7")
-            dash.show_extras()                  # SETUP > EXTRAS > FRAME: the same two buttons
-            dash.update_extras(g.read_status())
-            self.root.update()
-            c5 = dash.c5
-            t5 = [c5.itemcget(i, "text") for i in c5.find_all() if c5.type(i) == "text"]
-            for name in ("FRAME", "V13 ORIGINAL", "NEW FRAME", "TRIM ▸"):
-                self.assertIn(name, t5)
-            for i in c5.find_all():
-                if c5.type(i) == "text" and c5.itemcget(i, "text"):
-                    x0, y0, x1, y1 = c5.bbox(i)
-                    self.assertTrue(x0 >= 0 and x1 <= g.W and y1 <= g.H, c5.itemcget(i, "text"))
-            os.remove(g.CMD)
-            dash.design_pick(0)                 # tap V13 ORIGINAL on EXTRAS
-            with open(g.CMD) as f:
-                self.assertEqual(f.read(), "design:v13")
-            dash.armed = True                   # armed: the screen refuses
-            os.remove(g.CMD)
-            dash.design_pick(0)
-            self.assertFalse(os.path.exists(g.CMD))
-        finally:
-            rov.CMD_PATH = old
-            shutil.rmtree(d)
+        with open(os.path.join(self.dir, "designs.json"), "w") as f:
+            f.write("mine")
+        with open(self.cfg_path) as f:
+            before = f.read()
+        updater.copy_files(ROOT, self.dir)
+        with open(os.path.join(self.dir, "designs.json")) as f:
+            self.assertEqual(f.read(), "mine")
+        with open(self.cfg_path) as f:
+            self.assertEqual(f.read(), before)
+        self.assertTrue(os.path.exists(os.path.join(self.dir, "dashboard", "pages", "drive.py")))
 
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@
 # - Downloads the latest version from GitHub into ~/underwater-rov-backup (no git needed).
 # - Installs everything it needs (Python libraries, Bluetooth, ffmpeg, arduino-cli) and the app-menu entry.
 # - Updating keeps your settings: config.toml (motor flips), profiles, camera, autopilot, arm tune.
-# - After this, the app updates itself: SETUP > EXTRAS > UPDATE NOW when it says UPDATE READY.
+# - After this, the app updates itself: UPDATE NOW on the SYSTEM page when it says UPDATE READY.
 # - If the Arduino Mega is plugged in, it uploads the firmware (only when it's new or changed).
 set -euo pipefail
 

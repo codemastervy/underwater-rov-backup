@@ -10,36 +10,29 @@ PS5 controller --Bluetooth/USB--> Laptop (rov.py + dashboard) --USB--> Arduino M
 ```
 
 ## Screenshots
+The same dashboard as on the Pi, with simulated ROV data; the camera picture is a test pattern:
 
-The dashboard with nothing plugged in (no Arduino, no controller), so everything reads OFFLINE.
-
-| Main page | Profiles |
+| DRIVE with a controller profile | DRIVE with a keyboard profile |
 |---|---|
-| ![Main page](docs/screenshots/main.png) | ![Profiles page](docs/screenshots/profiles.png) |
-
-| Setup | Camera + PICTURE (ISO, RGB) |
-|---|---|
-| ![Setup page](docs/screenshots/setup.png) | ![Camera page](docs/screenshots/camera.png) |
-
-| Camera full screen | CAMERA ▸ (pick the camera) |
-|---|---|
-| ![Camera full screen](docs/screenshots/camera-full.png) | ![Camera select](docs/screenshots/camera-select.png) |
-
-| SETUP › EXTRAS | Keyboard profile (PROFILES page) |
-|---|---|
-| ![Extras page](docs/screenshots/extras.png) | ![Keyboard profile](docs/screenshots/profiles-keys.png) |
-
-The camera shots use a made-up test picture (no capture card plugged in).
+| ![Drive, controller](docs/screenshots/drive.png) | ![Drive, keyboard](docs/screenshots/drive-keyboard.png) |
+| **CAMERA** + PICTURE (ISO, RGB) | **AUTOPILOT** |
+| ![Camera](docs/screenshots/camera.png) | ![Autopilot](docs/screenshots/autopilot.png) |
+| **PROFILES**: controller profile | **PROFILES**: keyboard profile |
+| ![Profiles](docs/screenshots/profiles.png) | ![Keyboard profile](docs/screenshots/profiles-keys.png) |
+| **MOTORS** (direction, frame trim) | **SYSTEM** (sound, update, screen, Arduino Mega) |
+| ![Motors](docs/screenshots/motors.png) | ![System](docs/screenshots/system.png) |
+| Mission editor | No answer from the Mega |
+| ![Mission](docs/screenshots/mission.png) | ![No Mega](docs/screenshots/no-mega.png) |
 
 ## Files
 | File | What it is |
 |---|---|
 | `rov_mega/rov_mega.ino` | Mega firmware (upload once) |
 | `rov.py` | motor program (controller → motors), same as the Pi's but outputs to the Mega |
-| `rov_gui.py` | dashboard window: camera, profiles editor, motor flip, STOP |
+| `rov_gui.py` | starts the dashboard (pygame, any window size); its code is in `dashboard/`, the same as the Pi's |
 | `config.toml` | Mega pins, motor jobs/flips (copied from the Pi) |
 | `profiles.json` | drive profiles (copied from the Pi) |
-| `designs.json` | your changes to the frame-design trims (SETUP > DESIGN; not in the repo) |
+| `designs.json` | your changes to the frame-design trims (made on the MOTORS page; not in the repo) |
 | `tests/` | automatic tests: `python3 -m unittest discover tests` (no Mega or controller needed) |
 | `setup.sh` | one-command install / update (see above) |
 | `updater.py` | automatic updates from GitHub (used by the app) |
@@ -76,7 +69,7 @@ curl -fsSL https://raw.githubusercontent.com/codemastervy/underwater-rov-backup/
   If the Mega is plugged in and the firmware changed, it uploads the new firmware too.
 - Close the ROV Backup app before running it. Nothing needs installing first, not even git.
 - **After that you never need the command again:** the app checks GitHub for a new version when it opens and every
-  30 minutes. When there is one, it shows **⬆ UPDATE READY**; tap it (or **SETUP › EXTRAS › UPDATE NOW**) while SAFE.
+  30 minutes. When there is one, it shows **UPDATE READY**; click it, then **SYSTEM › UPDATE NOW** while SAFE.
   It downloads, installs and reopens itself. Settings are kept. If the update has new **Mega firmware**, the
   update panel tells you: close the app, plug in the Mega and run `bash ~/underwater-rov-backup/upload-mega.sh`.
 
@@ -91,53 +84,71 @@ Open **ROV Backup** from the app menu (or `bash run.sh`). The controls are the s
 |---|---|
 | OPTIONS | arm (sticks centred) |
 | CIRCLE / CREATE / PS | disarm |
-| Sticks / triggers / D-pad | depends on the drive profile (SETUP > PROFILES) |
-| TRIANGLE | next drive profile (while SAFE) |
+| Sticks / triggers / D-pad | depends on the profile in use (PROFILES page) |
+| TRIANGLE | next controller profile (while SAFE) |
 | SQUARE | camera page on/off |
 | R1 / L1 | speed up/down |
 
-**Keyboard drive** (switch on in SETUP › EXTRAS): W/S forward/back, A/D turn, Space up, Shift down, R/F tilt,
-**Enter = ARM**, **Esc = STOP**. If the window closes or freezes, the keys count as released (and with no controller the
-motors disarm). **Keyboard profiles:** on **SETUP › PROFILES** each profile is a **controller** (PAD) or **keyboard** (KEYS) profile:
-**+ CONTROLLER** / **+ KEYBOARD** makes one. In a keyboard profile tap an action, press the key; **SAVE + USE** to use it.
-**P** = next keyboard profile, TRIANGLE = next controller profile.
+**Profiles:** exactly one is in use, and its type decides what drives: a **controller profile** (PAD) or a **keyboard
+profile** (KEYS). Only the device that drives can arm; STOP works from everything at all times. TRIANGLE = next
+controller profile, **P** = next keyboard profile, or pick one from the PROFILE button on DRIVE (only while SAFE).
+**PROFILES (F4)** makes, copies, renames, deletes and edits them; **USE** puts one in use. Changes are saved at once.
+
+**Keyboard profiles** (built in: **Keys WASD** and **Keys arrows**): W/S forward/back, A/D turn, Space up, Shift down,
+R/F tilt, E/Q speed, **hold Enter = ARM**, **Esc = STOP**. Keys drive on DRIVE and CAMERA. If the window closes, freezes
+or loses the keyboard for 0.5 s, **the motors disarm**. The old KEYBOARD DRIVE switch is gone: if it was on, the update
+puts a keyboard profile in use.
+
+**Dashboard:** everything works with the mouse alone, and with the keyboard alone (arming is not on the mouse on purpose).
+
+| Key | |
+|---|---|
+| **Esc** | STOP, always. If it was already SAFE it also goes back |
+| F1-F6 | DRIVE, CAMERA, AUTOPILOT, PROFILES, MOTORS, SYSTEM (F2 again: full-screen video) |
+| arrows, Tab / Enter / Backspace | move the focus ring / use / back |
+| ← → on a value | change it |
+| P, + −, C, 1-5, 0 | on DRIVE and CAMERA: keyboard profile, speed, camera, autopilot mode, mode off |
+| Space | on DRIVE and CAMERA: STOP, unless the keyboard profile uses it |
+| F10, F11, F12 | list of keys, full screen / window, frame rate |
+
+With a keyboard profile, keys drive on DRIVE and CAMERA until you press **Tab**; then they work the screen until
+**Backspace**. On the other pages they never drive.
+
+It opens in a window you can resize. `bash run.sh --fullscreen` for full screen, `--size 1600x960` for another window
+size, `--fps 60` to limit the frame rate (saves battery), `--page camera` to start on another page.
 
 **Arm sound:** when armed, the motors play **an FPV-drone style arming sound (5 s)** (no
 speaker: a tiny audio-frequency PWM makes the motors whistle). **Touch any control and it stops at once** so you can
-drive. **SET TUNE** takes any RTTTL ringtone text (saved in `tune.txt`); **DEFAULT TUNE** goes back. On/off, volume and
-TEST are in SETUP › EXTRAS. **This needs the updated firmware: run the setup command again with the Mega plugged in.**
+drive. **SYSTEM (F6)**: **SET TUNE** takes any RTTTL ringtone text (saved in `tune.txt`); **DEFAULT** goes back; on/off,
+volume and TEST are there too.
 
-**Autopilot** (SETUP › AUTOPILOT, mouse only, OFF at every start-up): trim, CRUISE, LINE following, colour TARGET
-following (pick the colour by clicking the object: camera page › PICK), camera HEADING hold and timed MISSIONs.
+**Autopilot (F3)** (the controller can't switch it on, OFF at every start-up): trim, CRUISE, LINE following, colour
+TARGET following (pick the colour on the camera page with PICK), camera HEADING hold and timed MISSIONs.
 Any stick/key movement or STOP takes over. Green status bar = working; flashing red **TAKE CONTROL NOW** = unsure
 (it hovers, then switches off after 3 s). Same as the Pi version: see the Pi repo's README for details.
 
 **Camera picture:** CAMERA › PICTURE adjusts **ISO** (100 = normal, up to 400 for dark water), brightness, contrast,
-colour (saturation) and **RED / GREEN / BLUE** on their own (water makes things blue-green: try more RED, less BLUE).
-Saved in `camera.json`. **⛶ FULL SCREEN** makes the video fill the window; STOP and ARMED/SAFE stay at the side,
-**EXIT** goes back.
-
-**Frame** (SETUP › EXTRAS › FRAME, only while SAFE): pick the frame on the robot: **V13 ORIGINAL** (no trim: the
-default) or **NEW FRAME** (the pool-noodle frame in [aquabots-rov-hull](https://github.com/codemastervy/aquabots-rov-hull)).
-Each one trims the motors for its shape. **TRIM ▸** (or SETUP › DESIGN) fine-tunes it in the pool with **−/+** (saved in
-`designs.json`, kept on updates); **DEFAULTS** puts it back. Same as the Pi version: see the Pi repo's README (Frame designs).
-
-`bash run.sh --fullscreen` for full screen, `--size 1600x960` for a bigger window.
+colour and **RED / GREEN / BLUE** on their own (water makes things blue-green: try more RED, less BLUE).
+It changes live and is saved in `camera.json`. **FULL**: full-screen video; STOP and ARMED/SAFE stay at the sides.
 
 **Camera:** plug the capture card into the laptop. It's picked automatically (the laptop's own webcam is skipped).
-Wrong camera? Tap **CAMERA ▸** on the camera page: it steps through every camera the laptop can see and shows its
-name; the choice is remembered (`camera.json`). (`device = "/dev/video2"` under `[camera]` in `config.toml` still
-forces one and turns the button off.)
+Wrong camera? Change it with the **◀ name ▶** box above STOP on the camera page (click the name for the whole list); the
+choice is remembered (`camera.json`). (`device = "/dev/video2"` under `[camera]` in `config.toml` still forces one.)
+
+**MOTORS (F5)** (only while SAFE): **FLIP** reverses a motor that pushes the wrong way. **FRAME** picks the frame on the
+robot: **V13 ORIGINAL** (no trim: the default) or **NEW FRAME** (the pool-noodle frame in
+[aquabots-rov-hull](https://github.com/codemastervy/aquabots-rov-hull)), and fine-tunes its trim in the pool (saved in
+`designs.json`, kept on updates); **DEFAULT TRIM** puts it back. See the Pi repo's README (Frame designs).
 
 ## Safety
 - Won't arm until the Mega has answered ("⚠ Arduino Mega not found" is shown otherwise).
 - **The Mega stops all motors by itself if the laptop goes quiet for 0.3 s**: app closed, laptop crash,
   USB unplugged.
 - The laptop disarms if the Mega stops answering, the controller disconnects, or its Bluetooth link goes quiet.
-- After any of these you must press OPTIONS again.
+- After any of these you must arm again (OPTIONS, or hold Enter with a keyboard profile).
 
 ## Troubleshooting
 - "No permission for /dev/ttyACM0": you didn't log out/in after `install.sh`.
 - "No answer from /dev/ttyACM0": the firmware isn't uploaded. Run `upload-mega.sh`.
 - Controller not seen: `python3 rov.py --list` lists input devices.
-- Motor wrong way: SETUP > MOTORS > FLIP (saved in this laptop's `config.toml`, separate from the Pi).
+- Motor wrong way: MOTORS (F5) > FLIP (saved in this laptop's `config.toml`, separate from the Pi).
